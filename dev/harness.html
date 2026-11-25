@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CanvasScribble harness</title>
+    <!-- Optional: Foundry's own stylesheet and icons, symlinked into dist-dev/foundry/ for visual QA (never shipped). -->
+    <link
+      rel="stylesheet"
+      href="foundry/all.min.css"
+      onerror="this.href = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css'"
+    />
+    <link rel="stylesheet" href="foundry/foundry2.css" />
+    <link rel="stylesheet" href="styles/canvas-scribble.css" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #111;
+      }
+      #board {
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        touch-action: none;
+      }
+      /* Minimal v13 interface skeleton (foundry2.css provides the real look when present). */
+      #interface {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        pointer-events: none;
+        z-index: 30;
+      }
+      #ui-left {
+        display: flex;
+        flex-direction: column;
+        padding: 16px 0 0 16px;
+        pointer-events: none;
+      }
+      #scene-controls {
+        display: flex;
+        gap: 8px;
+        pointer-events: none;
+      }
+      #scene-controls menu {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      #scene-controls button {
+        pointer-events: all;
+      }
+      #ui-middle {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        pointer-events: none;
+      }
+      #ui-bottom {
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        align-items: center;
+        padding-bottom: 12px;
+      }
+      #hotbar {
+        display: flex;
+        gap: 4px;
+        pointer-events: all;
+      }
+      #hotbar .slot {
+        width: 46px;
+        height: 46px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 4px;
+        background: rgba(11, 10, 19, 0.75);
+      }
+      #ui-right {
+        width: 300px;
+        background: rgba(11, 10, 19, 0.85);
+        border-left: 1px solid #302831;
+        pointer-events: all;
+      }
+      #notifications {
+        position: fixed;
+        top: 10vh;
+        left: 50%;
+        transform: translateX(-50%);
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        z-index: 100;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        pointer-events: none;
+        font-family: Signika, sans-serif;
+      }
+      #notifications .notification {
+        padding: 6px 12px;
+        border-radius: 4px;
+        background: rgba(0, 0, 0, 0.8);
+        color: #eee;
+        border: 1px solid #555;
+      }
+      #notifications .warning {
+        border-color: #d8a33c;
+      }
+      #notifications .error {
+        border-color: #d83c3c;
+      }
+      #harness-panel {
+        position: fixed;
+        right: 316px;
+        top: 8px;
+        z-index: 120;
+        padding: 4px 8px;
+        border-radius: 4px;
+        background: rgba(0, 0, 0, 0.6);
+        color: #ccc;
+        font: 12px sans-serif;
+      }
+      #harness-panel a {
+        color: #9cf;
+      }
+      .sim-dialog {
+        position: fixed;
+        left: 50%;
+        top: 30%;
+        transform: translateX(-50%);
+        z-index: 300;
+        width: 360px;
+        padding: 0 12px 12px;
+        background: #1c1b22;
+        color: #eee;
+        border: 1px solid #444;
+        border-radius: 6px;
+        font-family: Signika, sans-serif;
+        box-shadow: 0 6px 30px rgba(0, 0, 0, 0.6);
+      }
+      .sim-dialog footer {
+        display: flex;
+        gap: 8px;
+      }
+      .sim-dialog footer button {
+        flex: 1;
+      }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js-legacy/7.4.2/pixi-legacy.min.js"></script>
+  </head>
+  <body class="vtt game theme-dark themed">
+    <canvas id="board"></canvas>
+    <div id="interface">
+      <section id="ui-left">
+        <aside id="scene-controls" class="faded-ui"></aside>
+      </section>
+      <section id="ui-middle">
+        <header id="ui-top"></header>
+        <div id="ui-bottom">
+          <section id="hotbar">
+            <div class="slot"></div>
+            <div class="slot"></div>
+            <div class="slot"></div>
+            <div class="slot"></div>
+            <div class="slot"></div>
+            <div class="slot"></div>
+            <div class="slot"></div>
+            <div class="slot"></div>
+            <div class="slot"></div>
+            <div class="slot"></div>
+          </section>
+        </div>
+      </section>
+      <section id="ui-right"></section>
+    </div>
+    <ol id="notifications"></ol>
+    <div id="harness-panel">booting…</div>
+    <script type="module" src="dev/harness.js"></script>
+  </body>
+</html>
