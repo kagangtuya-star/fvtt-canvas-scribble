@@ -1,0 +1,265 @@
+{
+  "CANVAS_SCRIBBLE": {
+    "Controls": {
+      "Group": "随绘幕布",
+      "Undo": "撤销（Ctrl+Z）",
+      "Redo": "重做（Ctrl+Shift+Z）",
+      "Clear": "清除…",
+      "Hide": "隐藏所有涂鸦（仅自己）",
+      "HiddenNotice": "涂鸦已对你隐藏"
+    },
+    "Tools": {
+      "Draw": "画笔",
+      "Highlight": "高亮",
+      "Arrow": "箭头",
+      "Shape": "形状",
+      "Laser": "激光笔",
+      "Text": "文字",
+      "Eraser": "橡皮擦"
+    },
+    "Mode": {
+      "Screen": {
+        "Name": "屏幕",
+        "Hint": "屏幕：标记固定在屏幕上，不随地图移动（短时）"
+      },
+      "Map": {
+        "Name": "地图",
+        "Hint": "地图：标记贴在地图上，随地图平移缩放"
+      }
+    },
+    "Brush": {
+      "Pen": "钢笔",
+      "Pressure": "压感钢笔",
+      "Pencil": "铅笔",
+      "Marker": "马克笔",
+      "Fineliner": "单线笔",
+      "Soft": "柔边笔刷",
+      "Chalk": "粉笔"
+    },
+    "Highlight": {
+      "Stroke": "荧光笔",
+      "Area": "区域（套索填充）"
+    },
+    "Arrow": {
+      "Straight": "直线箭头",
+      "Path": "手绘箭头",
+      "Both": "双向箭头"
+    },
+    "Shape": {
+      "Line": "直线",
+      "Rect": "矩形",
+      "Ellipse": "椭圆",
+      "Polygon": "多边形（逐点单击，回车或双击完成）"
+    },
+    "Eraser": {
+      "Stroke": "整笔擦除",
+      "Partial": "局部擦除"
+    },
+    "Style": {
+      "Halo": "描边光晕",
+      "Dash": "虚线",
+      "Fill": "填充"
+    },
+    "Palette": {
+      "Label": "随绘幕布调色板",
+      "Drag": "拖动以移动 · 双击归位",
+      "Mode": "空间",
+      "Tool": "工具",
+      "Color": "颜色",
+      "Size": "粗细",
+      "Labeled": "{label}：{value}",
+      "SizeValue": "粗细 {size}",
+      "Lifetime": "存续时间",
+      "Trail": "拖尾长度",
+      "Layer": "地图图层",
+      "Collapse": "收起调色板",
+      "Expand": "展开调色板"
+    },
+    "Color": {
+      "Player": "玩家颜色",
+      "Recent": "最近使用",
+      "Custom": "自定义颜色"
+    },
+    "Size": {
+      "HintGrid": "地图上的粗细以网格为基准：在任何场景看起来都一致。",
+      "HintZoom": "地图上的粗细跟随绘制时的缩放（客户端设置）。"
+    },
+    "Lifetime": {
+      "For": "存续时间 — {mode}",
+      "Custom": "自定义，例如 15s 或 2m",
+      "Fade": "淡出",
+      "NoFade": "无",
+      "PermanentHint": "永久：保存在场景中，直到被擦除",
+      "NoPermanent": "你的角色不能保存永久地图标注。"
+    },
+    "Layer": {
+      "ForTemporary": "临时地图标记所在图层",
+      "ForPermanent": "永久地图标注所在图层",
+      "Below": {
+        "Name": "Token 下方",
+        "Hint": "贴在地面上，受战争迷雾遮挡"
+      },
+      "Above": {
+        "Name": "Token 上方",
+        "Hint": "在 Token 和图块之上，受战争迷雾遮挡"
+      },
+      "Top": {
+        "Name": "最顶层",
+        "Hint": "在所有内容之上，包括战争迷雾"
+      }
+    },
+    "Hold": {
+      "Screen": "屏幕绘制",
+      "Map": "地图绘制",
+      "Laser": "激光笔",
+      "Eraser": "橡皮擦"
+    },
+    "Text": {
+      "Placeholder": "输入文字…（回车放置）"
+    },
+    "Clear": {
+      "Title": "清除涂鸦",
+      "Yes": "清除",
+      "Confirm": "确定清除“{name}”吗？这会为所有人移除 {count} 个标记。",
+      "PermanentWarning": "永久标注会从场景数据中删除。",
+      "NothingMine": "你在此场景中没有临时标记。",
+      "Mine": {
+        "Name": "我的临时标记",
+        "Hint": "屏幕与地图，可撤销"
+      },
+      "Screen": {
+        "Name": "全部屏幕标记",
+        "Hint": "所有人的屏幕标记"
+      },
+      "MapTemp": {
+        "Name": "全部临时地图标记",
+        "Hint": "所有人的，永久标注保留"
+      },
+      "AllTemp": {
+        "Name": "全部临时标记",
+        "Hint": "所有人的屏幕与地图标记"
+      },
+      "MinePermanent": {
+        "Name": "我的永久标注",
+        "Hint": "你在此场景保存的标记"
+      },
+      "Permanent": {
+        "Name": "全部永久标注",
+        "Hint": "此场景保存的所有标记"
+      }
+    },
+    "Notify": {
+      "NoGM": "没有 GM 在线：该标记已作为临时地图标记保留，未被保存。",
+      "NoPermanentPermission": "你的角色不能保存永久标注，该标记已作为临时标记保留。",
+      "NoMapPermission": "你的角色不能在地图上绘制。",
+      "NoScreenPermission": "你的角色不能在屏幕上绘制。",
+      "Budget": "此场景的标注存储预算已满。请擦除部分永久标注，或请 GM 提高预算。",
+      "TooMany": "此场景的永久标注数量已达上限。",
+      "SaveRefused": "GM 客户端拒绝保存该标注。",
+      "SaveFailed": "将标注保存到场景失败（详见控制台）。",
+      "SaveTimeout": "标注未能保存（GM 未及时响应）。",
+      "MaskLimit": "部分标记已被局部擦除过多次，请改为整笔擦除。",
+      "NothingToUndo": "没有可撤销的操作。",
+      "NothingToRedo": "没有可重做的操作。"
+    },
+    "Settings": {
+      "PermScreen": {
+        "Name": "屏幕绘制：最低角色",
+        "Hint": "允许在屏幕空间绘制临时标记的角色（GM 始终可以）。"
+      },
+      "PermMap": {
+        "Name": "地图绘制：最低角色",
+        "Hint": "允许在地图上绘制临时标记（含激光笔）的角色。"
+      },
+      "PermPermanent": {
+        "Name": "永久标注：最低角色",
+        "Hint": "允许将地图标注保存到场景的角色。保存经由在线 GM 的客户端完成。"
+      },
+      "PermManage": {
+        "Name": "擦除他人标记：最低角色",
+        "Hint": "允许擦除或清除其他用户标记的角色。所有人始终可以擦除自己的标记。"
+      },
+      "Budget": {
+        "Name": "每个场景的存储预算（KB）",
+        "Hint": "单个场景中永久标注的存储上限。场景数据会被每个客户端加载，请保持适度。"
+      },
+      "PlayerFog": {
+        "Name": "玩家的地图标记受战争迷雾影响",
+        "Hint": "玩家放在“最顶层”的标记改为显示在迷雾之下（不影响 GM 的标记）。"
+      },
+      "Pressure": {
+        "Name": "压感",
+        "Hint": "压感笔刷的线宽如何响应输入。",
+        "Auto": "数位笔用真实压感；鼠标与触控按速度模拟",
+        "Simulate": "所有设备都按速度模拟",
+        "Never": "固定线宽"
+      },
+      "FollowZoom": {
+        "Name": "地图笔刷粗细跟随缩放",
+        "Hint": "关闭：地图粗细以网格为基准。开启：按绘制时的缩放，使粗细在屏幕上保持一致。"
+      },
+      "Palette": {
+        "Name": "快捷调色板",
+        "Hint": "何时在快捷栏上方显示随绘幕布调色板。",
+        "Auto": "图层激活或按住绘制键时",
+        "Always": "始终显示",
+        "Never": "从不显示"
+      },
+      "ConfirmOwnClear": {
+        "Name": "清除自己的标记前确认",
+        "Hint": "清除他人或永久标记时始终会要求确认。"
+      },
+      "ShowNames": {
+        "Name": "显示正在绘制的人",
+        "Hint": "其他用户绘制时，在笔迹旁显示小名牌。"
+      },
+      "Debug": {
+        "Name": "调试面板",
+        "Hint": "显示渲染、缓存与网络计数器，并在控制台记录协议消息。"
+      }
+    },
+    "Keys": {
+      "HoldScreen": {
+        "Name": "按住在屏幕上绘制",
+        "Hint": "按住时用当前工具在屏幕空间绘制，在任何画布图层下都可用。"
+      },
+      "HoldMap": {
+        "Name": "按住在地图上绘制",
+        "Hint": "按住时用当前工具在地图上绘制，在任何画布图层下都可用。"
+      },
+      "HoldLaser": {
+        "Name": "按住使用激光笔",
+        "Hint": "按住时在地图上用会淡出的激光轨迹指示。"
+      },
+      "HoldEraser": {
+        "Name": "按住使用橡皮擦",
+        "Hint": "按住时擦除（默认未绑定）。"
+      },
+      "Undo": {
+        "Name": "撤销上一笔涂鸦",
+        "Hint": "在任何图层都可用。随绘幕布图层激活时，Ctrl+Z 也可撤销。"
+      },
+      "Redo": {
+        "Name": "重做",
+        "Hint": "随绘幕布图层激活时可用。"
+      },
+      "SizeDown": {
+        "Name": "笔刷变细"
+      },
+      "SizeUp": {
+        "Name": "笔刷变粗"
+      },
+      "Cancel": {
+        "Name": "取消当前笔画",
+        "Hint": "放弃正在绘制的笔画或多边形。"
+      },
+      "Finish": {
+        "Name": "完成多边形"
+      },
+      "Toggle": {
+        "Name": "切换随绘幕布图层",
+        "Hint": "在随绘幕布图层与 Token 图层之间切换。"
+      }
+    }
+  }
+}

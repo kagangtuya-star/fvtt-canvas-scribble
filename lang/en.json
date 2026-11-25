@@ -1,0 +1,265 @@
+{
+  "CANVAS_SCRIBBLE": {
+    "Controls": {
+      "Group": "CanvasScribble",
+      "Undo": "Undo (Ctrl+Z)",
+      "Redo": "Redo (Ctrl+Shift+Z)",
+      "Clear": "Clear…",
+      "Hide": "Hide all scribbles (only for you)",
+      "HiddenNotice": "Scribbles are hidden for you"
+    },
+    "Tools": {
+      "Draw": "Draw",
+      "Highlight": "Highlight",
+      "Arrow": "Arrow",
+      "Shape": "Shape",
+      "Laser": "Laser pointer",
+      "Text": "Text",
+      "Eraser": "Eraser"
+    },
+    "Mode": {
+      "Screen": {
+        "Name": "Screen",
+        "Hint": "Screen — marks stay on the screen while the map moves (short-lived)"
+      },
+      "Map": {
+        "Name": "Map",
+        "Hint": "Map — marks stick to the map and move with it"
+      }
+    },
+    "Brush": {
+      "Pen": "Pen",
+      "Pressure": "Pressure pen",
+      "Pencil": "Pencil",
+      "Marker": "Marker",
+      "Fineliner": "Monoline",
+      "Soft": "Soft brush",
+      "Chalk": "Chalk"
+    },
+    "Highlight": {
+      "Stroke": "Highlighter",
+      "Area": "Area (lasso fill)"
+    },
+    "Arrow": {
+      "Straight": "Straight arrow",
+      "Path": "Freehand arrow",
+      "Both": "Heads on both ends"
+    },
+    "Shape": {
+      "Line": "Line",
+      "Rect": "Rectangle",
+      "Ellipse": "Ellipse",
+      "Polygon": "Polygon (click points, Enter or double-click to finish)"
+    },
+    "Eraser": {
+      "Stroke": "Erase whole marks",
+      "Partial": "Erase parts"
+    },
+    "Style": {
+      "Halo": "Contrast halo",
+      "Dash": "Dashed",
+      "Fill": "Fill"
+    },
+    "Palette": {
+      "Label": "CanvasScribble palette",
+      "Drag": "Drag to move · double-click to dock",
+      "Mode": "Space",
+      "Tool": "Tool",
+      "Color": "Colour",
+      "Size": "Size",
+      "Labeled": "{label}: {value}",
+      "SizeValue": "Size {size}",
+      "Lifetime": "Lifetime",
+      "Trail": "Trail length",
+      "Layer": "Map layer",
+      "Collapse": "Collapse palette",
+      "Expand": "Expand palette"
+    },
+    "Color": {
+      "Player": "Player colour",
+      "Recent": "Recent",
+      "Custom": "Custom colour"
+    },
+    "Size": {
+      "HintGrid": "Map sizes are relative to the grid: they look the same on every scene.",
+      "HintZoom": "Map sizes follow your zoom when you draw (client setting)."
+    },
+    "Lifetime": {
+      "For": "Lifetime — {mode}",
+      "Custom": "Custom, e.g. 15s or 2m",
+      "Fade": "Fade out",
+      "NoFade": "None",
+      "PermanentHint": "Permanent: saved in the scene until erased",
+      "NoPermanent": "Your role cannot save permanent map annotations."
+    },
+    "Layer": {
+      "ForTemporary": "Layer for temporary map marks",
+      "ForPermanent": "Layer for permanent map marks",
+      "Below": {
+        "Name": "Below tokens",
+        "Hint": "On the ground, hidden by fog of war"
+      },
+      "Above": {
+        "Name": "Above tokens",
+        "Hint": "Over tokens and tiles, hidden by fog of war"
+      },
+      "Top": {
+        "Name": "Top",
+        "Hint": "Over everything, including fog of war"
+      }
+    },
+    "Hold": {
+      "Screen": "Screen draw",
+      "Map": "Map draw",
+      "Laser": "Laser",
+      "Eraser": "Eraser"
+    },
+    "Text": {
+      "Placeholder": "Type… (Enter to place)"
+    },
+    "Clear": {
+      "Title": "Clear scribbles",
+      "Yes": "Clear",
+      "Confirm": "Clear “{name}”? This removes {count} mark(s) for everyone.",
+      "PermanentWarning": "Permanent annotations are removed from the scene data.",
+      "NothingMine": "You have no temporary marks in this scene.",
+      "Mine": {
+        "Name": "My temporary marks",
+        "Hint": "Screen and map, can be undone"
+      },
+      "Screen": {
+        "Name": "All screen marks",
+        "Hint": "Everyone's screen marks"
+      },
+      "MapTemp": {
+        "Name": "All temporary map marks",
+        "Hint": "Everyone's, permanent ones stay"
+      },
+      "AllTemp": {
+        "Name": "All temporary marks",
+        "Hint": "Everyone's screen and map marks"
+      },
+      "MinePermanent": {
+        "Name": "My permanent annotations",
+        "Hint": "Your saved marks in this scene"
+      },
+      "Permanent": {
+        "Name": "All permanent annotations",
+        "Hint": "Every saved mark in this scene"
+      }
+    },
+    "Notify": {
+      "NoGM": "No GM is online: the mark was kept as a temporary map mark instead of being saved.",
+      "NoPermanentPermission": "Your role cannot save permanent annotations; the mark was kept as a temporary one.",
+      "NoMapPermission": "Your role cannot draw on the map.",
+      "NoScreenPermission": "Your role cannot draw on the screen.",
+      "Budget": "This scene's storage budget for annotations is full. Erase some permanent marks or ask the GM to raise the budget.",
+      "TooMany": "This scene has reached the maximum number of permanent annotations.",
+      "SaveRefused": "The GM's client refused to save the annotation.",
+      "SaveFailed": "Saving annotations to the scene failed (see console).",
+      "SaveTimeout": "The annotation could not be saved (the GM did not respond in time).",
+      "MaskLimit": "Some marks have been partially erased too many times; erase them whole instead.",
+      "NothingToUndo": "Nothing to undo.",
+      "NothingToRedo": "Nothing to redo."
+    },
+    "Settings": {
+      "PermScreen": {
+        "Name": "Screen drawing: minimum role",
+        "Hint": "Who may draw temporary marks in screen space (GMs always can)."
+      },
+      "PermMap": {
+        "Name": "Map drawing: minimum role",
+        "Hint": "Who may draw temporary marks on the map, including the laser pointer."
+      },
+      "PermPermanent": {
+        "Name": "Permanent annotations: minimum role",
+        "Hint": "Who may save map annotations in the scene. Saving goes through the active GM's client."
+      },
+      "PermManage": {
+        "Name": "Erase others' marks: minimum role",
+        "Hint": "Who may erase or clear marks drawn by other users. Everyone can always erase their own."
+      },
+      "Budget": {
+        "Name": "Storage budget per scene (KB)",
+        "Hint": "Upper limit for permanent annotations stored in one scene. Scene data is loaded by every client, so keep it reasonable."
+      },
+      "PlayerFog": {
+        "Name": "Players' map marks respect fog of war",
+        "Hint": "Players' marks on the “Top” layer are shown under the fog instead (GM marks are unaffected)."
+      },
+      "Pressure": {
+        "Name": "Pressure",
+        "Hint": "How stroke width reacts to input on pressure brushes.",
+        "Auto": "Pen pressure; speed-based for mouse and touch",
+        "Simulate": "Speed-based for every device",
+        "Never": "Constant width"
+      },
+      "FollowZoom": {
+        "Name": "Map brush size follows zoom",
+        "Hint": "Off: map sizes are relative to the grid. On: a size looks the same on screen at the zoom you draw with."
+      },
+      "Palette": {
+        "Name": "Quick palette",
+        "Hint": "When to show the CanvasScribble palette above the hotbar.",
+        "Auto": "While the layer is active or a draw key is held",
+        "Always": "Always",
+        "Never": "Never"
+      },
+      "ConfirmOwnClear": {
+        "Name": "Confirm clearing my own marks",
+        "Hint": "Clearing others' or permanent marks always asks for confirmation."
+      },
+      "ShowNames": {
+        "Name": "Show who is drawing",
+        "Hint": "Show a small name tag next to other users' strokes while they draw."
+      },
+      "Debug": {
+        "Name": "Debug overlay",
+        "Hint": "Show render, cache and network counters, and log protocol messages to the console."
+      }
+    },
+    "Keys": {
+      "HoldScreen": {
+        "Name": "Hold to draw on screen",
+        "Hint": "Draw in screen space with the current tool while held, on any canvas layer."
+      },
+      "HoldMap": {
+        "Name": "Hold to draw on the map",
+        "Hint": "Draw on the map with the current tool while held, on any canvas layer."
+      },
+      "HoldLaser": {
+        "Name": "Hold for laser pointer",
+        "Hint": "Point with a fading laser trail on the map while held."
+      },
+      "HoldEraser": {
+        "Name": "Hold for eraser",
+        "Hint": "Erase while held (unbound by default)."
+      },
+      "Undo": {
+        "Name": "Undo last scribble",
+        "Hint": "Works on any layer. Ctrl+Z also undoes while the CanvasScribble layer is active."
+      },
+      "Redo": {
+        "Name": "Redo",
+        "Hint": "While the CanvasScribble layer is active."
+      },
+      "SizeDown": {
+        "Name": "Smaller brush"
+      },
+      "SizeUp": {
+        "Name": "Larger brush"
+      },
+      "Cancel": {
+        "Name": "Cancel current stroke",
+        "Hint": "Abandons the stroke or polygon being drawn."
+      },
+      "Finish": {
+        "Name": "Finish polygon"
+      },
+      "Toggle": {
+        "Name": "Toggle CanvasScribble layer",
+        "Hint": "Switch between the CanvasScribble layer and the token layer."
+      }
+    }
+  }
+}
