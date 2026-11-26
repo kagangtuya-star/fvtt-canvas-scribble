@@ -2,7 +2,7 @@
   "id": "canvas-scribble",
   "title": "CanvasScribble 随绘幕布",
   "description": "Draw, point and annotate instantly — on the map (world space, can be permanent) or on the screen (viewport space, fades away). Pressure-sensitive brushes, arrows and shapes, a laser pointer, lifetime + fade timing synchronised to server time, real-time multiplayer, undo/redo and role-based permissions.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "authors": [
     {
       "name": "CanvasScribble contributors"
