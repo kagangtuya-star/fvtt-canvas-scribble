@@ -90,7 +90,7 @@ npm run harness  # build browser test harness into dist-dev/
 npm run package  # build dist/ -> release/module.zip
 ```
 
-Publishing a GitHub release tagged `vX.Y.Z` (matching `module.json`) runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which fills in the repository URLs and attaches `module.json` and `module.zip`. Local `npm run package` builds leave those URL fields empty.
+Publish a GitHub release tagged `vX.Y.Z` (or `X.Y.Z`); [`.github/workflows/release.yml`](.github/workflows/release.yml) automatically derives the module version from the tag, fills in the repository URLs and attaches `module.json` and `module.zip`. No source JSON version edits are needed. Local `npm run package` uses `package.json`'s version and leaves those URL fields empty.
 
 ## License
 

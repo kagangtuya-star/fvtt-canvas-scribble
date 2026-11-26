@@ -25,6 +25,7 @@ import {
 import { createRequire, stripTypeScriptTypes } from "node:module";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { configureManifest } from "./release.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SRC = join(ROOT, "src");
@@ -127,18 +128,18 @@ function compileTree(srcDir, outDir, vendorEntry) {
   return files.length;
 }
 
-function checkVersions() {
+function buildManifest() {
   const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
   const manifest = JSON.parse(readFileSync(join(ROOT, "module.json"), "utf8"));
-  if (pkg.version !== manifest.version) {
-    throw new Error(`Version mismatch: package.json ${pkg.version} vs module.json ${manifest.version}`);
-  }
-  return manifest;
+  return configureManifest(
+    { ...manifest, version: pkg.version },
+    { repo: process.env.MODULE_REPO || undefined, tag: process.env.RELEASE_TAG || undefined },
+  );
 }
 
 function build() {
   const started = Date.now();
-  const manifest = checkVersions();
+  const manifest = buildManifest();
   resolvePerfectFreehand(); // fail before touching dist/
   rmSync(DIST, { recursive: true, force: true });
   mkdirSync(OUT_SCRIPTS, { recursive: true });

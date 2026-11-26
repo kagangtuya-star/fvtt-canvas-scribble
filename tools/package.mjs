@@ -2,7 +2,8 @@
 /**
  * Package dist/ into module.zip (+ a copy of module.json) under release/.
  *
- * Release URLs are injected only when the repository is known, either from
+ * Release versions come from RELEASE_TAG or --tag, with the built version as
+ * the local default. URLs are injected only when the repository is known, either from
  * the environment (`MODULE_REPO=owner/name`, set by the GitHub workflow from
  * `github.repository`) or `--repo owner/name`. Nothing is invented otherwise.
  *
@@ -13,6 +14,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deflateRawSync } from "node:zlib";
+import { configureManifest } from "./release.mjs";
 import { validateManifest } from "./validate-manifest.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -109,22 +111,12 @@ function walk(dir) {
 
 function main() {
   if (!existsSync(join(DIST, "module.json"))) throw new Error("dist/ is missing; run `npm run build` first.");
-  const manifest = JSON.parse(readFileSync(join(DIST, "module.json"), "utf8"));
-  const repo = arg("--repo") ?? process.env.MODULE_REPO;
-  const tag = arg("--tag") ?? process.env.RELEASE_TAG ?? `v${manifest.version}`;
-  if (repo) {
-    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error(`Invalid repository "${repo}" (expected owner/name)`);
-    if (tag.replace(/^v/, "") !== manifest.version) {
-      throw new Error(`Tag ${tag} does not match module version ${manifest.version}`);
-    }
-    manifest.url = `https://github.com/${repo}`;
-    manifest.manifest = `https://github.com/${repo}/releases/latest/download/module.json`;
-    manifest.download = `https://github.com/${repo}/releases/download/${tag}/module.zip`;
-    manifest.bugs = `https://github.com/${repo}/issues`;
-    writeFileSync(join(DIST, "module.json"), JSON.stringify(manifest, null, 2) + "\n");
-  }
+  const repo = arg("--repo") ?? (process.env.MODULE_REPO || undefined);
+  const tag = arg("--tag") ?? (process.env.RELEASE_TAG || undefined);
+  const manifest = configureManifest(JSON.parse(readFileSync(join(DIST, "module.json"), "utf8")), { repo, tag });
   const problems = validateManifest(manifest, DIST, { requireUrls: !!repo });
   if (problems.length) throw new Error(`module.json is invalid:\n - ${problems.join("\n - ")}`);
+  writeFileSync(join(DIST, "module.json"), JSON.stringify(manifest, null, 2) + "\n");
   const files = walk(DIST);
   const entries = files.map((f) => ({ name: relative(DIST, f).split(sep).join("/"), data: readFileSync(f) }));
   mkdirSync(OUT, { recursive: true });

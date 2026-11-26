@@ -6,6 +6,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { VERSION_RE } from "./release.mjs";
 
 const ID_RE = /^[a-z0-9-]+$/;
 const URL_RE = /^https:\/\/[^\s]+$/;
@@ -15,7 +16,7 @@ export function validateManifest(m, baseDir, { requireUrls = false } = {}) {
   if (m.id !== "canvas-scribble") p.push(`id must be "canvas-scribble" (got ${JSON.stringify(m.id)})`);
   if (!ID_RE.test(m.id ?? "")) p.push("id may only contain lowercase letters, digits and dashes");
   if (typeof m.title !== "string" || !m.title.trim()) p.push("title is required");
-  if (!/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(m.version ?? "")) p.push(`version must be semver (got ${m.version})`);
+  if (typeof m.version !== "string" || !VERSION_RE.test(m.version)) p.push(`version must be semver (got ${m.version})`);
   if ("name" in m) p.push('"name" is the pre-v10 field; use "id"');
   if ("minimumCoreVersion" in m || "compatibleCoreVersion" in m) p.push("legacy *CoreVersion fields must not be used");
   const c = m.compatibility;

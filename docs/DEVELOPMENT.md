@@ -24,6 +24,19 @@
 
 To try the module in Foundry, copy or link `dist/` to `Data/modules/canvas-scribble/`.
 
+## Release versions
+
+Publish a GitHub Release with a tag such as `v1.0.2` or `1.0.2`. The Release workflow passes `RELEASE_TAG` and
+`MODULE_REPO` to both build and packaging. They generate the version and repository, manifest, download and issue
+URLs in `dist/module.json`, `release/module.json` and the manifest inside `release/module.zip`.
+Prerelease and build suffixes such as `v1.1.0-beta.1+build.2` are accepted; the download URL preserves the exact tag.
+The stable update URL uses GitHub's latest release.
+
+The source `module.json` contains module metadata without a version. Without `RELEASE_TAG`, builds use the version
+in `package.json`; releases do not require updating `package.json` or the lockfile. Neither script writes back to
+source JSON files. To preview a release locally, set both environment variables and run `npm run package`, or build
+first and run `node tools/package.mjs --repo owner/name --tag v1.0.2`.
+
 ## Layout
 
 ```

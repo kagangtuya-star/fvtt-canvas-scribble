@@ -90,7 +90,7 @@ npm run harness  # 构建浏览器测试台到 dist-dev/
 npm run package  # 打包 dist/ -> release/module.zip
 ```
 
-在 GitHub 发布与 `module.json` 版本号一致的 `vX.Y.Z` Release 时，[`.github/workflows/release.yml`](.github/workflows/release.yml) 会自动补全仓库地址并上传 `module.json` 与 `module.zip`。本地 `npm run package` 不会写入这些 URL。
+在 GitHub 发布标签为 `vX.Y.Z`（或 `X.Y.Z`）的 Release 即可：[`.github/workflows/release.yml`](.github/workflows/release.yml) 会自动从标签生成模块版本、补全仓库地址，并上传 `module.json` 与 `module.zip`，无需手动修改源码 JSON 的版本号。本地 `npm run package` 使用 `package.json` 的版本，不会写入这些 URL。
 
 ## 许可
 
