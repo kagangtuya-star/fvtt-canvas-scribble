@@ -40,9 +40,15 @@ export const boundsIntersect = (a: Bounds, b: Bounds): boolean =>
  * deviation from the linearly interpolated pressure exceeds the tolerance.
  * Iterative, so long strokes cannot overflow the call stack.
  */
-export function simplify(flat: readonly number[], tolerance: number, pressureTolerance = 0.06): number[] {
+function simplifyIndices(
+  flat: readonly number[],
+  tolerance: number,
+  pressureTolerance: number,
+  angles?: readonly number[],
+  angleTolerance = Math.PI / 36,
+): number[] {
   const n = flat.length / 3;
-  if (n <= 2 || tolerance <= 0) return flat.slice();
+  if (n <= 2 || tolerance <= 0) return Array.from({ length: n }, (_, i) => i);
   const keep = new Uint8Array(n);
   keep[0] = 1;
   keep[n - 1] = 1;
@@ -60,6 +66,8 @@ export function simplify(flat: readonly number[], tolerance: number, pressureTol
     const dx = bx - ax;
     const dy = by - ay;
     const len2 = dx * dx + dy * dy;
+    const startAngle = angles?.[first] ?? 0;
+    const angleDelta = shortestAngle((angles?.[last] ?? 0) - startAngle);
     let worst = -1;
     let worstScore = 1;
     for (let i = first + 1; i < last; i++) {
@@ -71,7 +79,13 @@ export function simplify(flat: readonly number[], tolerance: number, pressureTol
       const dist = Math.hypot(px - (ax + dx * t), py - (ay + dy * t));
       const frac = (i - first) / (last - first);
       const pDev = Math.abs(pp - (ap + (bp - ap) * frac));
-      const score = Math.max(dist / tolerance, pDev / pressureTolerance);
+      // The painter interpolates the shortest turn between samples. An unwrapped
+      // angle keeps extra turns visible to simplification even across the seam.
+      let score = Math.max(dist / tolerance, pDev / pressureTolerance);
+      if (angles) {
+        const aDev = Math.abs(angles[i]! - (startAngle + angleDelta * (len2 > 0 ? t : frac)));
+        score = Math.max(score, aDev / angleTolerance);
+      }
       if (score > worstScore) {
         worstScore = score;
         worst = i;
@@ -83,28 +97,51 @@ export function simplify(flat: readonly number[], tolerance: number, pressureTol
     }
   }
   const out: number[] = [];
-  for (let i = 0; i < n; i++) if (keep[i]) out.push(flat[i * 3]!, flat[i * 3 + 1]!, flat[i * 3 + 2]!);
+  for (let i = 0; i < n; i++) if (keep[i]) out.push(i);
   return out;
+}
+
+const shortestAngle = (rad: number) => (((rad % (2 * Math.PI)) + 3 * Math.PI) % (2 * Math.PI)) - Math.PI;
+
+function pickPoints(flat: readonly number[], indices: readonly number[]): number[] {
+  const out: number[] = [];
+  for (const i of indices) out.push(flat[i * 3]!, flat[i * 3 + 1]!, flat[i * 3 + 2]!);
+  return out;
+}
+
+export function simplify(flat: readonly number[], tolerance: number, pressureTolerance = 0.06): number[] {
+  return pickPoints(flat, simplifyIndices(flat, tolerance, pressureTolerance));
 }
 
 /** Simplify with a growing tolerance until at most `maxPoints` remain (graceful degradation). */
 export function simplifyToLimit(flat: readonly number[], tolerance: number, maxPoints: number): number[] {
-  let out = simplify(flat, tolerance);
+  return pickPoints(flat, simplifyIndicesToLimit(flat, tolerance, maxPoints));
+}
+
+/** Original indices of the retained points, optionally preserving changing nib angles. */
+export function simplifyIndicesToLimit(
+  flat: readonly number[],
+  tolerance: number,
+  maxPoints: number,
+  angles?: readonly number[],
+): number[] {
+  const unwrapped = angles?.map((a, i) => (i === 0 ? a : shortestAngle(a - angles[i - 1]!)));
+  if (unwrapped) for (let i = 1; i < unwrapped.length; i++) unwrapped[i] = unwrapped[i - 1]! + unwrapped[i]!;
+  let out = simplifyIndices(flat, tolerance, 0.06, unwrapped);
   let tol = tolerance;
-  for (let i = 0; i < 12 && out.length / 3 > maxPoints; i++) {
+  for (let i = 0; i < 12 && out.length > maxPoints; i++) {
     tol *= 1.8;
-    out = simplify(flat, tol, 0.06 * (1 + i));
+    out = simplifyIndices(flat, tol, 0.06 * (1 + i), unwrapped, (Math.PI / 36) * (1 + i));
   }
-  if (out.length / 3 > maxPoints) {
+  if (out.length > maxPoints) {
     // Last resort: uniform decimation, keeping both ends.
-    const n = out.length / 3;
+    const n = out.length;
     const step = n / maxPoints;
     const dec: number[] = [];
     for (let k = 0; k < maxPoints - 1; k++) {
-      const i = Math.floor(k * step) * 3;
-      dec.push(out[i]!, out[i + 1]!, out[i + 2]!);
+      dec.push(out[Math.floor(k * step)]!);
     }
-    dec.push(out[(n - 1) * 3]!, out[(n - 1) * 3 + 1]!, out[(n - 1) * 3 + 2]!);
+    dec.push(out[n - 1]!);
     out = dec;
   }
   return out;

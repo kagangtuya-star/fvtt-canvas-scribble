@@ -1,11 +1,11 @@
 import { LIMITS, LIVE_BATCH_MS, SOCKET_NAME } from "../constants.ts";
-import { encodePoints } from "../core/codec.ts";
+import { encodeAngles, encodePoints } from "../core/codec.ts";
 import { toWire, zKindOf } from "../core/sanitize.ts";
 import type { ScribbleItem } from "../core/types.ts";
 import { RateLimiter } from "../core/util.ts";
 import { stats } from "../render/stats.ts";
-import { MAX_MESSAGE_CHARS, PROTOCOL_VERSION, messageCost, parseMessage } from "./protocol.ts";
-import type { Message } from "./protocol.ts";
+import { MAX_LIVE_BATCH, MAX_MESSAGE_CHARS, PROTOCOL_VERSION, messageCost, parseMessage } from "./protocol.ts";
+import type { LiveUpdate, Message } from "./protocol.ts";
 
 type Outbound = Message extends infer M ? (M extends Message ? Omit<M, "v" | "scene"> : never) : never;
 
@@ -16,10 +16,16 @@ export interface SocketLike {
 }
 
 export interface Inbound {
-  msg: Message;
+  msg: Exclude<Message, { t: "b" }>;
   /** Authenticated sender (resolved from the id the server attached). */
   sender: FoundryUser;
 }
+
+const rateLimits = () => ({
+  messages: new RateLimiter(LIMITS.rate.messages.rate, LIMITS.rate.messages.burst),
+  points: new RateLimiter(LIMITS.rate.points.rate, LIMITS.rate.points.burst),
+  items: new RateLimiter(LIMITS.rate.items.rate, LIMITS.rate.items.burst),
+});
 
 /**
  * Socket wrapper: outbound stamping, inbound envelope validation, sender
@@ -30,11 +36,11 @@ export class Net {
   readonly #socket: SocketLike;
   readonly #users: { get(id: string): FoundryUser | undefined };
   readonly #selfId: string;
-  readonly #limits = {
-    messages: new RateLimiter(LIMITS.rate.messages.rate, LIMITS.rate.messages.burst),
-    points: new RateLimiter(LIMITS.rate.points.rate, LIMITS.rate.points.burst),
-    items: new RateLimiter(LIMITS.rate.items.rate, LIMITS.rate.items.burst),
-  };
+  readonly #limits = rateLimits();
+  // Preview traffic must never spend the budget needed to commit the final items.
+  readonly #previewLimits = rateLimits();
+  // On pen-up all companions arrive together, even for a long, detailed stroke.
+  readonly #finalPoints = new RateLimiter(LIMITS.rate.points.rate, LIMITS.rate.points.burst * MAX_LIVE_BATCH);
   readonly #warned = new Map<string, number>();
   readonly #listener: (payload: unknown, senderId?: unknown) => void;
   #handler: ((input: Inbound) => void) | null = null;
@@ -91,11 +97,17 @@ export class Net {
     // permanent items for scenes it is not viewing.
     const [m, p, i] = messageCost(msg);
     const now = performance.now();
-    if (!this.#limits.messages.take(senderId, m, now)) return this.#drop(senderId, "rate: messages");
-    if (p && !this.#limits.points.take(senderId, p, now)) return this.#drop(senderId, "rate: points");
-    if (i && !this.#limits.items.take(senderId, i, now)) return this.#drop(senderId, "rate: items");
+    const limits = msg.t === "s" || msg.t === "p" || msg.t === "b" ? this.#previewLimits : this.#limits;
+    if (!limits.messages.take(senderId, m, now)) return this.#drop(senderId, "rate: messages");
+    const points = msg.t === "e" ? this.#finalPoints : limits.points;
+    if (p && !points.take(senderId, p, now)) return this.#drop(senderId, "rate: points");
+    if (i && !limits.items.take(senderId, i, now)) return this.#drop(senderId, "rate: items");
     try {
-      this.#handler?.({ msg, sender });
+      if (msg.t === "b") {
+        for (const update of msg.updates) {
+          this.#handler?.({ msg: { ...update, v: msg.v, scene: msg.scene }, sender });
+        }
+      } else this.#handler?.({ msg, sender });
     } catch (err) {
       console.error("CanvasScribble | error handling socket message", err);
     }
@@ -118,43 +130,76 @@ export class Net {
 }
 
 /**
- * Streams a live item: one `s` message, then `p` batches of new points every
- * {@link LIVE_BATCH_MS}, then the final `e` (or `x`). The end message carries
- * the canonical item, so receivers that missed a batch still converge.
+ * Starts items individually, batches preview changes across all live items,
+ * and sends the canonical item on end so receivers converge after a dropped preview.
  */
 export class LiveSender {
   readonly #net: Net;
-  readonly #live = new Map<string, { item: ScribbleItem; sent: number; timer: ReturnType<typeof setTimeout> | null }>();
+  readonly #sent = new Map<string, ScribbleItem>();
+  readonly #dirty = new Map<string, ScribbleItem>();
+  #timer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(net: Net) {
     this.#net = net;
   }
 
   start(item: ScribbleItem): void {
-    this.#live.set(item.id, { item, sent: item.points.length / 3, timer: null });
+    this.#sent.set(item.id, item);
     this.#net.send({ t: "s", item: toWire(item) });
   }
 
-  /** The live item changed (points appended); schedule a batch. */
+  /** Schedule changes for this item and its companions in one preview batch. */
   push(item: ScribbleItem): void {
-    const s = this.#live.get(item.id);
-    if (!s) return;
-    s.item = item;
-    if (s.timer) return;
-    s.timer = setTimeout(() => {
-      s.timer = null;
-      this.#flush(item.id);
+    if (!this.#sent.has(item.id)) return;
+    this.#dirty.set(item.id, item);
+    if (this.#timer !== null) return;
+    this.#timer = setTimeout(() => {
+      this.#timer = null;
+      this.#flush();
     }, LIVE_BATCH_MS);
   }
 
-  #flush(id: string): void {
-    const s = this.#live.get(id);
-    if (!s) return;
-    const n = s.item.points.length / 3;
-    if (n <= s.sent) return;
-    const pts = encodePoints(s.item.points.slice(s.sent * 3), zKindOf(s.item.kind));
-    this.#net.send({ t: "p", id, from: s.sent, pts });
-    s.sent = n;
+  #flush(): void {
+    let batch: LiveUpdate[] = [];
+    let size = 128; // Envelope and separators.
+    const send = () => {
+      if (batch.length === 1) this.#net.send(batch[0]!);
+      else if (batch.length) this.#net.send({ t: "b", updates: batch });
+      batch = [];
+      size = 128;
+    };
+    for (const [id, item] of this.#dirty) {
+      const previous = this.#sent.get(id)!;
+      const update = this.#previewUpdate(previous, item);
+      if (!update) continue;
+      this.#sent.set(id, item);
+      const chars = JSON.stringify(update).length + 1;
+      if (batch.length >= MAX_LIVE_BATCH || size + chars > MAX_MESSAGE_CHARS) send();
+      batch.push(update);
+      size += chars;
+    }
+    this.#dirty.clear();
+    send();
+  }
+
+  #previewUpdate(previous: ScribbleItem, item: ScribbleItem): LiveUpdate | null {
+    if (previous.kind !== item.kind || previous.tool !== item.tool || !!previous.angles !== !!item.angles)
+      return { t: "s", item: toWire(item) };
+    const a = previous.points;
+    const b = item.points;
+    let i = 0;
+    while (
+      i < Math.min(a.length, b.length) &&
+      a[i] === b[i] &&
+      a[i + 1] === b[i + 1] &&
+      a[i + 2] === b[i + 2] &&
+      previous.angles?.[i / 3] === item.angles?.[i / 3]
+    )
+      i += 3;
+    if (i === a.length && i === b.length) return null;
+    const pts = encodePoints(b.slice(i), zKindOf(item.kind));
+    const ang = item.angles && encodeAngles(item.angles.slice(i / 3));
+    return { t: "p", id: item.id, from: i / 3, pts, ...(ang ? { ang } : {}) };
   }
 
   end(item: ScribbleItem, persist: boolean): void {
@@ -163,18 +208,24 @@ export class LiveSender {
   }
 
   cancel(id: string): void {
-    if (!this.#live.has(id)) return;
+    if (!this.#sent.has(id)) return;
     this.#stop(id);
     this.#net.send({ t: "x", id });
   }
 
   #stop(id: string): void {
-    const s = this.#live.get(id);
-    if (s?.timer) clearTimeout(s.timer);
-    this.#live.delete(id);
+    this.#sent.delete(id);
+    this.#dirty.delete(id);
+    if (this.#dirty.size === 0 && this.#timer !== null) {
+      clearTimeout(this.#timer);
+      this.#timer = null;
+    }
   }
 
   clear(): void {
-    for (const id of [...this.#live.keys()]) this.#stop(id);
+    if (this.#timer !== null) clearTimeout(this.#timer);
+    this.#timer = null;
+    this.#dirty.clear();
+    this.#sent.clear();
   }
 }

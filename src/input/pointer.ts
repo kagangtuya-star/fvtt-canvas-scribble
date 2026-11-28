@@ -52,7 +52,7 @@ export class PointerInput {
   }
 
   static sample(e: PointerEvent): ClientSample {
-    // Mice report 0.5 while a button is down (0 when hovering); pens report real pressure.
+    // Mice report 0.5 while a button is down (0 when hovering); pens report real pressure, tilt & twist.
     return {
       cx: e.clientX,
       cy: e.clientY,
@@ -61,6 +61,7 @@ export class PointerInput {
       pointerType: e.pointerType || "mouse",
       tiltX: e.tiltX,
       tiltY: e.tiltY,
+      twist: e.twist,
     };
   }
 
@@ -153,10 +154,18 @@ export class PointerInput {
   }
 
   #wheel(e: WheelEvent): void {
-    if (!this.#onBoard(e) || !this.#enabled() || !e.shiftKey || e.ctrlKey || e.metaKey) return;
-    this.#swallow(e);
-    const delta = e.deltaY || e.deltaX;
-    if (delta) this.#session.nudgeSize(delta < 0 ? 1 : -1);
+    if (!this.#onBoard(e) || !this.#enabled() || e.ctrlKey || e.metaKey) return;
+    if (e.shiftKey && !e.altKey) {
+      this.#swallow(e);
+      const delta = e.deltaY || e.deltaX;
+      if (delta) this.#session.nudgeSize(delta < 0 ? 1 : -1);
+      return;
+    }
+    if (e.altKey) {
+      this.#swallow(e);
+      const delta = e.deltaY || e.deltaX;
+      if (delta) this.#session.nudgeAngle(delta < 0 ? 1 : -1, e.shiftKey ? 5 : 15);
+    }
   }
 
   /** Right-click while placing a polygon finishes it (instead of opening a context menu). */

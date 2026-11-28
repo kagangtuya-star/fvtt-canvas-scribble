@@ -10,7 +10,8 @@ import type { WireItem } from "../core/types.ts";
  * receiver re-validates permissions, limits and item content.
  *
  *   s  start      live item begins (style, first points)
- *   p  points     live points appended from index `from`
+ *   p  points     live points replacing the tail from index `from`
+ *   b  batch      live starts, snapshots and points sharing one envelope
  *   e  end        final canonical item; `persist` asks the GM to store it
  *   x  cancel     live item abandoned
  *   d  delete     items removed (temporary: applied by everyone; stored: by the GM)
@@ -48,9 +49,12 @@ export const CLEAR_SCOPES: readonly ClearScope[] = [
 
 export type NackReason = "permission" | "budget" | "count" | "invalid";
 
+type Envelope = { v: number; scene: string };
+export type LiveUpdate = { t: "s"; item: WireItem } | { t: "p"; id: string; from: number; pts: string; ang?: string };
+
 export type Message =
-  | { v: number; t: "s"; scene: string; item: WireItem }
-  | { v: number; t: "p"; scene: string; id: string; from: number; pts: string }
+  | (Envelope & LiveUpdate)
+  | (Envelope & { t: "b"; updates: LiveUpdate[] })
   | { v: number; t: "e"; scene: string; item: WireItem; persist?: boolean }
   | { v: number; t: "x"; scene: string; id: string }
   | { v: number; t: "d"; scene: string; ids: string[] }
@@ -70,6 +74,21 @@ const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 
 export const MAX_MESSAGE_CHARS = 256 * 1024;
 /** Items in one `r` reply / ids in one `d` delete. */
 export const MAX_BATCH = 200;
+/** The largest symmetry preset produces twelve live items per gesture. */
+export const MAX_LIVE_BATCH = 12;
+
+function isLiveUpdate(raw: unknown): raw is LiveUpdate {
+  if (!isObj(raw)) return false;
+  if (raw.t === "s") return isObj(raw.item);
+  return (
+    raw.t === "p" &&
+    isId(raw.id) &&
+    Number.isInteger(raw.from) &&
+    (raw.from as number) >= 0 &&
+    typeof raw.pts === "string" &&
+    (raw.ang === undefined || typeof raw.ang === "string")
+  );
+}
 
 /**
  * Structural validation of an inbound payload. Item contents are checked
@@ -77,8 +96,18 @@ export const MAX_BATCH = 200;
  */
 export function parseMessage(raw: unknown): Message | null {
   if (!isObj(raw) || raw.v !== PROTOCOL_VERSION || !isId(raw.scene)) return null;
+  const scene = raw.scene;
   switch (raw.t) {
     case "s":
+    case "p":
+      return isLiveUpdate(raw) ? { ...raw, v: PROTOCOL_VERSION, scene } : null;
+    case "b":
+      return Array.isArray(raw.updates) &&
+        raw.updates.length > 0 &&
+        raw.updates.length <= MAX_LIVE_BATCH &&
+        raw.updates.every(isLiveUpdate)
+        ? { t: "b", v: PROTOCOL_VERSION, scene: raw.scene, updates: raw.updates }
+        : null;
     case "u":
       return isObj(raw.item) ? (raw as unknown as Message) : null;
     case "e":
@@ -90,10 +119,6 @@ export function parseMessage(raw: unknown): Message | null {
         item: raw.item as unknown as WireItem,
         persist: raw.persist === true,
       };
-    case "p":
-      return isId(raw.id) && Number.isInteger(raw.from) && (raw.from as number) >= 0 && typeof raw.pts === "string"
-        ? (raw as unknown as Message)
-        : null;
     case "x":
       return isId(raw.id) ? (raw as unknown as Message) : null;
     case "d":
@@ -117,15 +142,29 @@ export function parseMessage(raw: unknown): Message | null {
 
 /** Rate-limit cost of a message: [messages, points, items]. */
 export function messageCost(msg: Message): [number, number, number] {
+  const points = (item: WireItem) =>
+    Math.ceil((String(item?.points ?? "").length + String(item?.angles ?? "").length) / 6);
+  const liveCost = (update: LiveUpdate): [number, number] =>
+    update.t === "s" ? [points(update.item), 1] : [Math.ceil((update.pts.length + (update.ang?.length ?? 0)) / 6), 0];
   switch (msg.t) {
     case "p":
-      return [1, Math.ceil(msg.pts.length / 6), 0];
     case "s":
+      return [1, ...liveCost(msg)];
+    case "b": {
+      let p = 0;
+      let i = 0;
+      for (const update of msg.updates) {
+        const [pointCost, itemCost] = liveCost(update);
+        p += pointCost;
+        i += itemCost;
+      }
+      return [1, p, i];
+    }
     case "e":
     case "u":
-      return [1, Math.ceil(String(msg.item.points ?? "").length / 6), 1];
+      return [1, points(msg.item), 1];
     case "r":
-      return [1, msg.items.reduce((n, i) => n + Math.ceil(String(i?.points ?? "").length / 6), 0), msg.items.length];
+      return [1, msg.items.reduce((n, i) => n + points(i), 0), msg.items.length];
     case "d":
       return [1, 0, Math.ceil(msg.ids.length / 10)];
     default:

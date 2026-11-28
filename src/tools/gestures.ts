@@ -1,13 +1,17 @@
-import { BRUSHES } from "../brush/brushes.ts";
+import { BRUSHES, resolveBrushParams } from "../brush/brushes.ts";
+import { recognizeQuickShape } from "../brush/quickshape.ts";
 import { StrokeRecorder } from "../brush/recorder.ts";
 import type { InputSample, PressureMode } from "../brush/recorder.ts";
 import { dragShape, shapeIsDegenerate } from "../brush/shapes.ts";
 import type { Modifiers } from "../brush/shapes.ts";
+import { cloneTransformedItem, symmetryTransforms } from "../brush/symmetry.ts";
+import type { PointTransform, SymmetryMode } from "../brush/symmetry.ts";
 import { LIMITS } from "../constants.ts";
 import { quantizePoints } from "../core/codec.ts";
 import { boundsOf, polylineLength, resample } from "../core/geometry.ts";
 import type { SpaceAdapter } from "../core/space.ts";
 import type { BrushId, Kind, Mode, ScribbleItem, ShapeId } from "../core/types.ts";
+import { randomId } from "../core/util.ts";
 import type { Prefs } from "../state/prefs.ts";
 
 /**
@@ -25,6 +29,7 @@ export interface ClientSample {
   pointerType: string;
   tiltX?: number;
   tiltY?: number;
+  twist?: number;
 }
 
 export interface Target {
@@ -32,6 +37,10 @@ export interface Target {
   space: SpaceAdapter;
   /** Screen anchor chosen at pointer down. */
   anchor?: [number, number];
+  /** Grid snap step in space units (0 = disabled). */
+  snapStep?: number;
+  /** Symmetry centre in space units. */
+  symmetry?: { mode: SymmetryMode; cx: number; cy: number };
 }
 
 export interface ToolHost {
@@ -48,8 +57,9 @@ export interface ToolHost {
   ): ScribbleItem;
   /** Show/stream a live item (first call starts it). */
   live(item: ScribbleItem): void;
-  /** Finalise a live item (temporary or permanent). */
+  /** Finalise one or more live items (grouped in a single Undo command). */
   commit(item: ScribbleItem): void;
+  commitBatch?(items: ScribbleItem[]): void;
   /** Abandon a live item. */
   cancel(id: string): void;
   /** Server time (ms). */
@@ -69,16 +79,22 @@ export interface Gesture {
   cancel(): void;
 }
 
-export const toSpace = (t: Target, s: ClientSample): InputSample => {
+export function snapCoord(v: number, step?: number): number {
+  if (!step || step <= 0) return v;
+  return Math.round(v / step) * step;
+}
+
+export const toSpace = (t: Target, s: ClientSample, applySnap = false): InputSample => {
   const p = t.space.fromClient(s.cx, s.cy, t.anchor);
   return {
-    x: p.x,
-    y: p.y,
+    x: applySnap ? snapCoord(p.x, t.snapStep) : p.x,
+    y: applySnap ? snapCoord(p.y, t.snapStep) : p.y,
     time: s.time,
     pressure: s.pressure,
     pointerType: s.pointerType,
     tiltX: s.tiltX,
     tiltY: s.tiltY,
+    twist: s.twist,
   };
 };
 
@@ -97,13 +113,19 @@ interface FreehandSpec {
   extra?: Partial<ScribbleItem>;
 }
 
+const QUICKSHAPE_HOLD_MS = 380;
+
 export class FreehandGesture implements Gesture {
   readonly #host: ToolHost;
   readonly #target: Target;
   readonly #spec: FreehandSpec;
+  readonly #transforms: PointTransform[];
+  #mirrorIds: string[];
   #rec: StrokeRecorder;
   #item: ScribbleItem;
   #width: number;
+  #holdTimer: ReturnType<typeof setTimeout> | null = null;
+  #snapped: ScribbleItem | null = null;
 
   constructor(host: ToolHost, target: Target, spec: FreehandSpec, first: ClientSample) {
     this.#host = host;
@@ -111,34 +133,102 @@ export class FreehandGesture implements Gesture {
     this.#spec = spec;
     const brush = spec.kind === "stroke" ? BRUSHES[spec.tool as BrushId] : null;
     this.#width = target.space.widthFor(spec.size, brush?.widthScale ?? 1);
+    this.#transforms =
+      target.symmetry && target.symmetry.mode !== "none"
+        ? symmetryTransforms(target.symmetry.mode, target.symmetry.cx, target.symmetry.cy)
+        : symmetryTransforms("none", 0, 0);
+    this.#mirrorIds = this.#transforms.slice(1).map(() => randomId(16));
     this.#rec = this.#recorder();
-    this.#rec.add(toSpace(target, first));
+    this.#rec.add(toSpace(target, first, !!brush?.pixelAligned && !!target.snapStep));
     this.#item = host.makeItem(target, spec.kind, spec.tool, this.#width, this.#rec.preview(), spec.extra);
-    host.live(this.#item);
+    this.#emitLive(this.#item);
   }
 
   #recorder(): StrokeRecorder {
     const brush = this.#spec.kind === "stroke" ? BRUSHES[this.#spec.tool as BrushId] : null;
     const u = px(this.#target);
+    const p = this.#host.prefs;
+    const resolved = brush ? resolveBrushParams(brush, p.brushParams[brush.id]) : null;
+    const recordAngles =
+      !!brush && (brush.recordsAngles || resolved?.angleMode === "tilt" || resolved?.angleMode === "twist");
     return new StrokeRecorder({
       width: this.#width,
       streamline: brush?.streamline ?? 0.35,
       pressureMode: this.#host.pressureMode(),
       usesPressure: brush?.pressure ?? false,
       usesTilt: brush?.tilt ?? false,
+      recordAngles,
+      stabilizerMode: brush?.pixelAligned ? "off" : p.stabilizer,
+      stabilizerStrength: p.stabilizerStrength,
+      unitsPerPx: u,
       minDistance: 0.6 * u,
       tolerance: 0.35 * u,
     });
   }
 
+  #emitLive(primary: ScribbleItem): void {
+    this.#host.live(primary);
+    for (let i = 1; i < this.#transforms.length; i++) {
+      this.#host.live(cloneTransformedItem(primary, this.#mirrorIds[i - 1]!, this.#transforms[i]!));
+    }
+  }
+
+  #clearHold(): void {
+    if (this.#holdTimer) {
+      clearTimeout(this.#holdTimer);
+      this.#holdTimer = null;
+    }
+  }
+
+  #armQuickShape(): void {
+    this.#clearHold();
+    const brush = this.#spec.kind === "stroke" ? BRUSHES[this.#spec.tool as BrushId] : null;
+    if (!this.#host.prefs.quickShape || this.#spec.kind !== "stroke" || brush?.pixelAligned || this.#rec.line) return;
+    if (this.#rec.pointCount < 6) return;
+    this.#holdTimer = setTimeout(() => {
+      this.#holdTimer = null;
+      const pts = this.#rec.preview();
+      const match = recognizeQuickShape(pts);
+      if (!match) return;
+      const style = { ...this.#item.style };
+      delete style.brush;
+      if (match.closed) style.closed = true;
+      const snapped: ScribbleItem = {
+        ...this.#item,
+        kind: "shape",
+        tool: match.tool,
+        points: quantizePoints(match.points),
+        angles: undefined,
+        style,
+      };
+      this.#snapped = snapped;
+      this.#emitLive(snapped);
+    }, QUICKSHAPE_HOLD_MS);
+  }
+
   move(samples: ClientSample[], mods: Modifiers): void {
+    const brush = this.#spec.kind === "stroke" ? BRUSHES[this.#spec.tool as BrushId] : null;
+    const snap = !!brush?.pixelAligned && !!this.#target.snapStep;
     this.#rec.line = mods.shift && this.#spec.kind === "stroke";
+
+    if (this.#snapped) {
+      // Small hand jitter while holding preserves the QuickShape snap; larger drag exits snap.
+      const last = samples.at(-1);
+      if (last && this.#rec.last) {
+        const sp = toSpace(this.#target, last, snap);
+        if (Math.hypot(sp.x - this.#rec.last.x, sp.y - this.#rec.last.y) < 10 * px(this.#target)) return;
+      }
+      this.#snapped = null;
+    }
+
     for (const s of samples) {
-      this.#rec.add(toSpace(this.#target, s));
+      this.#rec.add(toSpace(this.#target, s, snap));
       if (this.#rec.full && !this.#rec.line) this.#chain();
     }
-    this.#item = { ...this.#item, points: this.#rec.preview() };
-    this.#host.live(this.#item);
+    const angles = this.#rec.previewAngles();
+    this.#item = { ...this.#item, points: this.#rec.preview(), ...(angles ? { angles } : {}) };
+    this.#emitLive(this.#item);
+    this.#armQuickShape();
   }
 
   /**
@@ -147,40 +237,66 @@ export class FreehandGesture implements Gesture {
    * start head would land on a junction).
    */
   #chain(): void {
+    this.#clearHold();
     const noHead = { ...this.#item.style };
     delete noHead.head;
-    this.#host.commit({ ...this.#item, points: this.#rec.finish(), style: noHead });
+    const { points, angles } = this.#rec.finishWithAngles();
+    const done: ScribbleItem = { ...this.#item, points, ...(angles ? { angles } : {}), style: noHead };
+    this.#commitAll(done);
     const next = this.#rec.chain();
     this.#rec = next;
     const style = { ...this.#item.style };
     if (style.head === "both") style.head = "end";
+    this.#mirrorIds = this.#transforms.slice(1).map(() => randomId(16));
     this.#item = this.#host.makeItem(this.#target, this.#spec.kind, this.#spec.tool, this.#width, next.preview(), {
       ...this.#spec.extra,
       style,
     });
-    this.#host.live(this.#item);
+    this.#emitLive(this.#item);
+  }
+
+  #commitAll(primary: ScribbleItem): void {
+    if (this.#transforms.length <= 1) {
+      this.#host.commit(primary);
+      return;
+    }
+    const batch: ScribbleItem[] = [primary];
+    for (let i = 1; i < this.#transforms.length; i++) {
+      batch.push(cloneTransformedItem(primary, this.#mirrorIds[i - 1]!, this.#transforms[i]!));
+    }
+    if (this.#host.commitBatch) this.#host.commitBatch(batch);
+    else for (const it of batch) this.#host.commit(it);
   }
 
   up(_s: ClientSample, mods: Modifiers): boolean {
+    this.#clearHold();
+    if (this.#snapped) {
+      this.#commitAll(this.#snapped);
+      this.#snapped = null;
+      return false;
+    }
     this.#rec.line = mods.shift && this.#spec.kind === "stroke";
-    let points = this.#rec.finish();
+    let { points, angles } = this.#rec.finishWithAngles();
     if (points.length < 6) {
-      // A tap: a dot (two coincident points so every renderer draws a round blot).
+      // A tap: a dot (two coincident points so every renderer draws a blot).
       const p = points.length >= 3 ? points : this.#rec.preview();
       if (p.length < 3) return (this.cancel(), false);
       points = [p[0]!, p[1]!, p[2] ?? 0.5, p[0]! + 0.01 * px(this.#target), p[1]!, p[2] ?? 0.5];
+      if (angles && angles.length) angles = [angles[0]!, angles[0]!];
     }
     if (this.#spec.kind === "area") {
       const b = boundsOf(points);
       const min = 4 * px(this.#target);
       if (points.length < 9 || (b[2] - b[0] < min && b[3] - b[1] < min)) return (this.cancel(), false);
     }
-    this.#host.commit({ ...this.#item, points });
+    this.#commitAll({ ...this.#item, points, ...(angles ? { angles } : {}) });
     return false;
   }
 
   cancel(): void {
+    this.#clearHold();
     this.#host.cancel(this.#item.id);
+    for (const id of this.#mirrorIds) this.#host.cancel(id);
   }
 }
 
@@ -206,7 +322,7 @@ export class ShapeGesture implements Gesture {
     this.#host = host;
     this.#target = target;
     this.#shape = shape;
-    this.#start = toSpace(target, first);
+    this.#start = toSpace(target, first, !!target.snapStep);
     const w = target.space.widthFor(size);
     const pts = dragShape(shape, this.#start, this.#start, { shift: false, alt: false });
     this.#item = host.makeItem(target, "shape", shape, w, pts, extra);
@@ -217,7 +333,9 @@ export class ShapeGesture implements Gesture {
   move(samples: ClientSample[], mods: Modifiers): void {
     const last = samples.at(-1);
     if (!last) return;
-    const points = quantizePoints(dragShape(this.#shape, this.#start, toSpace(this.#target, last), mods));
+    const points = quantizePoints(
+      dragShape(this.#shape, this.#start, toSpace(this.#target, last, !!this.#target.snapStep), mods),
+    );
     this.#item = { ...this.#item, points };
     if (!this.#started && shapeIsDegenerate(points, 2 * px(this.#target))) return;
     this.#started = true;
@@ -256,7 +374,7 @@ export class PolygonGesture implements Gesture {
     this.#host = host;
     this.#target = target;
     this.#width = target.space.widthFor(size);
-    const p = toSpace(target, first);
+    const p = toSpace(target, first, !!target.snapStep);
     this.#vertices.push(p.x, p.y, 0.5);
     this.#lastClick = first.time;
     this.#item = host.makeItem(target, "shape", "polygon", this.#width, [...this.#vertices, p.x, p.y, 0.5], extra);
@@ -285,15 +403,15 @@ export class PolygonGesture implements Gesture {
 
   move(samples: ClientSample[], mods: Modifiers): void {
     const last = samples.at(-1);
-    if (last) this.#preview(toSpace(this.#target, last), mods);
+    if (last) this.#preview(toSpace(this.#target, last, !!this.#target.snapStep), mods);
   }
 
   hover(s: ClientSample, mods: Modifiers): void {
-    if (!this.#done) this.#preview(toSpace(this.#target, s), mods);
+    if (!this.#done) this.#preview(toSpace(this.#target, s, !!this.#target.snapStep), mods);
   }
 
   down(s: ClientSample, mods: Modifiers): void {
-    const p = toSpace(this.#target, s);
+    const p = toSpace(this.#target, s, !!this.#target.snapStep);
     const near =
       Math.hypot(p.x - this.#vertices[0]!, p.y - this.#vertices[1]!) <= PolygonGesture.CLOSE_PX * px(this.#target);
     const double = s.time - this.#lastClick < 350;

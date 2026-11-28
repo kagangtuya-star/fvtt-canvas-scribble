@@ -1,8 +1,8 @@
-import { BRUSHES } from "./brush/brushes.ts";
+import { BRUSHES, diffBrushOverride, resolveBrushParams } from "./brush/brushes.ts";
 import type { PressureMode } from "./brush/recorder.ts";
 import type { Modifiers } from "./brush/shapes.ts";
 import { LIMITS, PENDING_TIMEOUT_MS } from "./constants.ts";
-import { decodePoints, quantizePoints } from "./core/codec.ts";
+import { decodeAngles, decodePoints, quantizeAngles, quantizePoints } from "./core/codec.ts";
 import { boundsOf, simplifyToLimit } from "./core/geometry.ts";
 import { History } from "./core/history.ts";
 import type { Command, HistoryExecutor } from "./core/history.ts";
@@ -15,7 +15,7 @@ import type { SpaceAdapter, Viewport } from "./core/space.ts";
 import { ItemStore } from "./core/store.ts";
 import type { Entry } from "./core/store.ts";
 import { SCHEMA_VERSION } from "./core/types.ts";
-import type { Kind, MapLayer, Mode, ScribbleItem, WireItem } from "./core/types.ts";
+import type { BrushId, EraseMask, Kind, MapLayer, Mode, ScribbleItem, WireItem } from "./core/types.ts";
 import { randomId } from "./core/util.ts";
 import { activeGM, userColor, viewedLevel } from "./foundry/compat.ts";
 import { readStored, rawItems, sceneRef, SceneWriter } from "./foundry/persistence.ts";
@@ -25,7 +25,7 @@ import { LiveSender, Net } from "./net/net.ts";
 import type { Inbound, SocketLike } from "./net/net.ts";
 import type { ClearScope, Message } from "./net/protocol.ts";
 import type { RenderHost } from "./render/renderer.ts";
-import { normalizePrefs, sizeKey } from "./state/prefs.ts";
+import { activeBrushId, brushBlend, brushOpacity, normalizePrefs, sizeKey } from "./state/prefs.ts";
 import type { Prefs, ToolId } from "./state/prefs.ts";
 import { hitItem, hitPath } from "./tools/hit.ts";
 import {
@@ -87,6 +87,8 @@ export class Session implements ToolHost, RenderHost {
   #level: string | undefined;
   /** Temporary items kept across a canvas redraw of the same scene. */
   #stash: { scene: string; items: ScribbleItem[] } | null = null;
+  /** Custom symmetry axis centre in map space (null = viewport centre). */
+  symmetryCenter: { x: number; y: number } | null = null;
   hold: HoldMode | null = null;
   /** Hook for the UI text editor (text tool). */
   onTextRequest: ((req: TextRequest) => void) | null = null;
@@ -363,12 +365,33 @@ export class Session implements ToolHost, RenderHost {
     const life = kind === "laser" ? 0 : this.lifetimeFor(target.mode);
     const permanent = target.mode === "map" && life === 0 && kind !== "laser";
     const style: ScribbleItem["style"] = {};
-    const brush = kind === "stroke" ? BRUSHES[tool as keyof typeof BRUSHES] : undefined;
-    if (p.halo && kind !== "laser" && kind !== "area" && tool !== "highlighter" && tool !== "soft") style.halo = true;
+    const brush = kind === "stroke" ? BRUSHES[tool as BrushId] : undefined;
+    if (
+      p.halo &&
+      kind !== "laser" &&
+      kind !== "area" &&
+      tool !== "highlighter" &&
+      tool !== "soft" &&
+      tool !== "airbrush" &&
+      tool !== "watercolor" &&
+      tool !== "neon"
+    )
+      style.halo = true;
     if (p.dash && (kind === "shape" || kind === "area" || tool === "fineliner")) style.dash = true;
     if (p.fill && kind === "shape" && (tool === "rect" || tool === "ellipse" || tool === "polygon")) style.fill = 0.22;
     if (kind === "area") style.fill = 0.28;
+    if ((kind === "shape" || kind === "area") && p.fillPattern !== "solid") style.fillPattern = p.fillPattern;
+    if ((kind === "shape" || kind === "area") && p.roughness > 0.01) {
+      style.brush = { ...(style.brush ?? {}), rgh: Math.round(p.roughness * 100) / 100 };
+    }
+    if (brush) {
+      const blend = brushBlend(p, brush.id);
+      if (blend !== brush.blend) style.blend = blend;
+      const ov = diffBrushOverride(brush, p.brushParams[brush.id]);
+      if (ov) style.brush = ov;
+    }
     const layer: MapLayer = kind === "laser" ? "top" : permanent ? p.layer.permanent : p.layer.temporary;
+    const opacity = brush ? brushOpacity(p, brush.id) : 1;
     const item: ScribbleItem = {
       schemaVersion: SCHEMA_VERSION,
       id: randomId(16),
@@ -378,7 +401,7 @@ export class Session implements ToolHost, RenderHost {
       kind,
       tool,
       color: this.color(),
-      opacity: brush?.opacity ?? 1,
+      opacity,
       size,
       points,
       style,
@@ -415,26 +438,36 @@ export class Session implements ToolHost, RenderHost {
   }
 
   commit(raw: ScribbleItem): void {
-    if (!this.scene) return;
+    this.commitBatch([raw]);
+  }
+
+  /** Commit one or more items (e.g. symmetry strokes) as a single Undo step. */
+  commitBatch(rawItems: ScribbleItem[]): void {
+    if (!this.scene || !rawItems.length) return;
     const now = this.now();
-    let item: ScribbleItem;
-    if (raw.kind === "laser") item = { ...raw, points: quantizePoints(raw.points, "time") };
-    else {
-      const life = raw.expiresAt === null ? null : raw.expiresAt - raw.createdAt;
-      item = {
-        ...raw,
-        points: quantizePoints(raw.points, zKindOf(raw.kind)),
-        createdAt: now,
-        expiresAt: life === null ? null : now + life,
-      };
+    const committed: ScribbleItem[] = [];
+    for (const raw of rawItems) {
+      let item: ScribbleItem;
+      if (raw.kind === "laser") item = { ...raw, points: quantizePoints(raw.points, "time") };
+      else {
+        const life = raw.expiresAt === null ? null : raw.expiresAt - raw.createdAt;
+        item = {
+          ...raw,
+          points: quantizePoints(raw.points, zKindOf(raw.kind)),
+          ...(raw.angles?.length ? { angles: quantizeAngles(raw.angles) } : {}),
+          createdAt: now,
+          expiresAt: life === null ? null : now + life,
+        };
+      }
+      if (item.expiresAt === null) {
+        if (!this.#persist(item, true)) continue;
+      } else {
+        this.store.put(item, "temp");
+        this.#live.end(item, false);
+      }
+      if (item.kind !== "laser") committed.push(item);
     }
-    if (item.expiresAt === null) {
-      if (!this.#persist(item, true)) return;
-    } else {
-      this.store.put(item, "temp");
-      this.#live.end(item, false);
-    }
-    if (item.kind !== "laser") this.history.record({ type: "create", items: [item] });
+    if (committed.length) this.history.record({ type: "create", items: committed });
     this.changed();
   }
 
@@ -533,11 +566,21 @@ export class Session implements ToolHost, RenderHost {
 
   #target(mode: Mode, s: ClientSample): Target | null {
     if (!this.scene) return null;
+    const symMode = this.prefs.symmetry;
     if (mode === "map") {
       if (!this.#map) return null;
-      return { mode, space: this.#map };
+      const snapStep = this.prefs.gridSnap ? (this.#map.frame.gridSize / this.#map.sx) * 0.5 : 0;
+      let symmetry: Target["symmetry"];
+      if (symMode !== "none") {
+        const vp = this.#screen.viewport;
+        const c = this.symmetryCenter ?? this.#map.fromClient(vp.left + vp.width / 2, vp.top + vp.height / 2);
+        symmetry = { mode: symMode, cx: c.x, cy: c.y };
+      }
+      return { mode, space: this.#map, snapStep, symmetry };
     }
-    return { mode, space: this.#screen, anchor: this.#screen.anchorFor(s.cx, s.cy) };
+    const anchor: [number, number] = symMode !== "none" ? [0, 0] : this.#screen.anchorFor(s.cx, s.cy);
+    const symmetry = symMode !== "none" ? { mode: symMode, cx: 0, cy: 0 } : undefined;
+    return { mode, space: this.#screen, anchor, symmetry };
   }
 
   /** Primary button down. Returns false when nothing was started (the event is not consumed). */
@@ -748,9 +791,16 @@ export class Session implements ToolHost, RenderHost {
         continue;
       }
       const mpts = quantizePoints(simplifyToLimit(shift(dense), r * 0.1, LIMITS.maxPointsPerMask));
+      const mask: EraseMask = { size: r * 2, points: mpts };
+      if (this.prefs.eraserTip === "rect") {
+        mask.tip = "rect";
+        mask.ang = this.prefs.eraserAngle;
+        mask.asp = this.prefs.eraserAspect;
+      }
+      if (this.prefs.eraserHardness < 0.99) mask.hrd = this.prefs.eraserHardness;
       after.push({
         ...original.item,
-        erase: [...masks, { size: r * 2, points: mpts }],
+        erase: [...masks, mask],
         revision: original.item.revision + 1,
       });
     }
@@ -965,6 +1015,7 @@ export class Session implements ToolHost, RenderHost {
         if (!may(item.mode === "map" ? "map" : "screen")) return;
         const existing = here ? this.store.get(item.id) : undefined;
         if (existing && existing.item.author !== sender.id) return;
+        if (msg.t === "s" && existing && existing.state !== "live") return;
         const permanent = item.expiresAt === null;
         if (permanent && (item.mode !== "map" || !may("permanent") || item.kind === "laser")) {
           if (msg.t === "e" && relay && msg.persist)
@@ -1001,14 +1052,21 @@ export class Session implements ToolHost, RenderHost {
         const entry = this.store.get(msg.id);
         if (!entry || entry.state !== "live" || entry.item.author !== sender.id) return;
         const have = entry.item.points.length / 3;
-        if (msg.from > have) return; // missed a batch: the end message will carry the full item
+        if (msg.from > have || msg.from >= LIMITS.maxPointsPerItem) return;
         const room = LIMITS.maxPointsPerItem - msg.from;
         const pts = decodePoints(msg.pts, zKindOf(entry.item.kind), room);
         if (!pts) return;
         const ref = sceneRef(scene);
         if (!inExtent(pts, entry.item.mode, { mapExtent: { w: ref.w, h: ref.h } })) return;
         const points = entry.item.points.slice(0, msg.from * 3).concat(pts);
-        this.store.put({ ...entry.item, points }, "live");
+        if (!points.length) return;
+        let angles: number[] | undefined;
+        if (msg.ang) {
+          const decoded = decodeAngles(msg.ang, pts.length / 3);
+          if (!decoded || decoded.length !== pts.length / 3 || (entry.item.angles?.length ?? 0) < msg.from) return;
+          angles = (entry.item.angles ?? []).slice(0, msg.from).concat(decoded);
+        }
+        this.store.put({ ...entry.item, points, angles }, "live");
         this.#liveSeen.set(msg.id, performance.now());
         return;
       }
@@ -1132,6 +1190,23 @@ export class Session implements ToolHost, RenderHost {
     const step = Math.max(1, Math.round(cur * 0.12));
     const sizes = { ...this.prefs.sizes, [key]: cur + Math.sign(delta) * step };
     this.setPrefs({ sizes });
+  }
+
+  /** Rotate the active brush or rectangular eraser nib angle (degrees). */
+  nudgeAngle(delta: number, step = 15): void {
+    const { tool } = this.effective();
+    const wrap = (deg: number) => ((((deg + 180) % 360) + 360) % 360) - 180;
+    if (tool === "eraser") {
+      this.setPrefs({ eraserTip: "rect", eraserAngle: wrap(this.prefs.eraserAngle + Math.sign(delta) * step) });
+      return;
+    }
+    const id = activeBrushId(this.prefs);
+    if (!id) return;
+    const brush = BRUSHES[id];
+    const cur = resolveBrushParams(brush, this.prefs.brushParams[id]).angle;
+    const next = Math.round(wrap(cur + Math.sign(delta) * step));
+    const params = { ...this.prefs.brushParams, [id]: { ...(this.prefs.brushParams[id] ?? {}), ang: next } };
+    this.setPrefs({ brushParams: params });
   }
 
   destroy(): void {
