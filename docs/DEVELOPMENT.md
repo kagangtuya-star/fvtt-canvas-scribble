@@ -98,6 +98,7 @@ Socket `module.canvas-scribble`, envelope `{ v, t, scene, … }` (`src/net/proto
 | `x`                       | live item cancelled                                                                          |
 | `d`                       | items deleted                                                                                |
 | `u`                       | item replaced (partial erase, undo / redo of an erase, layer change)                         |
+| `U`                       | up to 50 items replaced at once (multi-selection transform, recolour, undo / redo of those)  |
 | `c`                       | tiered clear (`mine`, `screen`, `mapTemp`, `allTemp`, `minePermanent`, `permanent`, `media`) |
 | `q` / `r`                 | late joiner asks for temporary marks / a peer replies with its own                           |
 | `ms` / `mp` / `me` / `mu` | wet-media stroke start / points / end / undo                                                 |
@@ -107,11 +108,39 @@ Socket `module.canvas-scribble`, envelope `{ v, t, scene, … }` (`src/net/proto
 Receivers drop messages from themselves or unknown users, over 256 KB, or malformed, and apply per-sender token buckets
 for messages, points and items. Preview traffic has its own budget so it cannot crowd out final items. Each handler
 re-checks the sender's role against the world permission settings and whether they may modify the target item.
+The sender paces non-preview messages in order when a batch exceeds the burst budget. A large edit may arrive at
+other clients in stages, but later undo or delete messages stay behind it in the queue.
 
 **Permanent marks.** The author sends `e` with `persist`; the active GM validates, checks the budget and batches a Scene
 update (60 ms); every client then reads the flags (`updateScene`) and shows the mark from the tile cache. The GM's
 `SceneWriter` also knows items that are queued or being written, so a delete (for example an immediate undo) that
 arrives before the write lands is still applied.
+
+## Drawing aids
+
+All aids are client-side: they shape the points before an item exists, so the protocol, validation and permissions are
+unchanged. Per-user preferences live in `state/prefs.ts`; per-scene guides in a hidden client setting (`guides`,
+validated by `assist/guides-model.ts`, debounced writes, newest 40 scenes).
+
+- **Input pipeline** (`tools/gestures.ts` → `brush/recorder.ts`): raw samples → dejitter (One Euro filter) →
+  stabilizer (`lazy` string or time-window `average`, fed by a 16 ms tick while the pen rests) → streamline →
+  ruler constraint → points. Filters work in CSS pixels (`unitsPerPx`), so zoom does not change their feel. On lift
+  the stabilizer can catch up to the pen tip; optional Laplacian post-smoothing keeps point count and endpoints.
+- **Symmetry** (`brush/symmetry.ts`): mirror, quad, radial and kaleidoscope modes as 3×3 matrices around a per-scene,
+  per-mode centre with a rotatable axis. Copies are ordinary items made by `transformItem`, so they sync like any
+  other mark. Shapes, polygons and arrows get companions too.
+- **Rulers** (`assist/`): perspective rulers with 1–3 vanishing points (optional parallels) and centripetal
+  Catmull–Rom curve rulers (open / closed, optional parallel offset). A stroke starting within 32 px of a curve follows
+  it; otherwise the perspective lock picks the closest direction after 10 px of travel. Line and arrow tools use the
+  perspective lock only. Alt at pointer down draws freely.
+- **Selection & free transform** (`session.ts`, `tools/transform.ts`, `tools/lasso.ts`): marquee or lasso,
+  touch / contain, Shift adds, Ctrl removes. Every transform is a 3×3 matrix in a reference space (map units, or
+  screen units around the viewport centre) conjugated into each item's anchor space. `transformItem` maps points,
+  per-point and nib angles, size (√|det|), erase masks and text; rectangles and ellipses stay native when the
+  transform keeps them axis-aligned and otherwise become closed polygons. Items being dragged are drawn as sprites
+  (renderer transient set) and committed once as a single undoable update (`u` or chunked `U`). Committed geometry
+  uses the same validation locally and remotely; items the user may no longer modify or that would leave the scene
+  extent are restored.
 
 ## Wet media (paint tool)
 

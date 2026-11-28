@@ -30,6 +30,14 @@ First release.
   state and drying, ink build-up. Runs in a worker (CPU reference, WebGL2 backend after a parity self-test); strokes
   are synchronised as inputs. Local input recovery and periodic GM checkpoints save wet simulation state independently
   of drying; reloading resumes wetness and pigment flow. Dry paint keeps compact deposit bakes in Scene-referenced files.
+- Drawing aids: dejitter (One Euro) separate from the stabilizer; lazy-string and time-average stabilizers with
+  catch-up on lift; curve smoothing; zoom-independent filtering.
+- Symmetry: 3/4/6× kaleidoscopes, draggable per-scene centre and rotatable axis; shapes, polygons and arrows mirror too.
+- Rulers: 1/2/3-point perspective and curve rulers (closed, parallel offset) per scene, editable on the canvas;
+  Alt draws freely.
+- Selection: marquee and lasso (touch / contain, add / subtract), multi-selection, select all, and a free-transform
+  frame with scale, rotate, pivot, skew, distort, perspective, flip and numeric scale / angle. Batch `U` update
+  message.
 - English and Simplified Chinese.
 
 ### Fixed
