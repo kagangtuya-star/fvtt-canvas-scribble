@@ -113,6 +113,12 @@ const dynamic = {
   "Media.Brush": ["watercolor", "wash", "ink", "gouache", "oil", "water", "smudge", "sponge"],
   "Media.Hint": ["watercolor", "wash", "ink", "gouache", "oil", "water", "smudge", "sponge"],
   "Media.Paper": ["cold", "hot", "rough", "xuan", "canvas"],
+  "Dyn.Sensor": ["p", "t", "v", "d", "r"],
+  "Dyn.Target": ["size", "flw", "hrd", "ang", "asp", "sct", "spc"],
+  "Dyn.Combine": ["mul", "min", "max", "add"],
+  "Dyn.Dir": ["abs", "rel", "axial"],
+  "Dyn.Rand": ["dab", "stroke", "smooth"],
+  "Dyn.Curve": ["lin", "soft", "firm", "s", "inv", "thr"],
   "Media.PaperHint": ["cold", "hot", "rough", "xuan", "canvas"],
 };
 for (const [group, ids] of Object.entries(dynamic)) for (const id of ids) used.add(`${group}.${cap(id)}`);

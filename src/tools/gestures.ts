@@ -1,5 +1,6 @@
 import type { StrokeConstraint } from "../assist/constraint.ts";
-import { BRUSHES, resolveBrushParams } from "../brush/brushes.ts";
+import { BRUSHES, diffBrushOverride, resolveBrushParams } from "../brush/brushes.ts";
+import { dynamicsSensors } from "../brush/dynamics.ts";
 import { recognizeQuickShape } from "../brush/quickshape.ts";
 import { StrokeRecorder } from "../brush/recorder.ts";
 import type { InputSample, PressureMode } from "../brush/recorder.ts";
@@ -31,6 +32,8 @@ export interface ClientSample {
   tiltX?: number;
   tiltY?: number;
   twist?: number;
+  /** Pen altitude (radians, π/2 = upright), when the browser reports it. */
+  altitudeAngle?: number;
 }
 
 export interface Target {
@@ -97,12 +100,14 @@ export const toSpace = (t: Target, s: ClientSample, applySnap = false): InputSam
   return {
     x: applySnap ? snapCoord(p.x, t.snapStep) : p.x,
     y: applySnap ? snapCoord(p.y, t.snapStep) : p.y,
+    client: { x: s.cx, y: s.cy },
     time: s.time,
     pressure: s.pressure,
     pointerType: s.pointerType,
     tiltX: s.tiltX,
     tiltY: s.tiltY,
     twist: s.twist,
+    altitudeAngle: s.altitudeAngle,
   };
 };
 
@@ -170,8 +175,7 @@ export class FreehandGesture implements Gesture {
     );
     if (this.#rec.pointCount === before) return;
     if (this.#rec.full) this.#chain();
-    const angles = this.#rec.previewAngles();
-    this.#item = { ...this.#item, points: this.#rec.preview(), ...(angles ? { angles } : {}) };
+    this.#item = { ...this.#item, ...this.#rec.previewData() };
     this.#emitLive(this.#item);
   }
 
@@ -187,13 +191,20 @@ export class FreehandGesture implements Gesture {
     const resolved = brush ? resolveBrushParams(brush, p.brushParams[brush.id]) : null;
     const recordAngles =
       !!brush && (brush.recordsAngles || resolved?.angleMode === "tilt" || resolved?.angleMode === "twist");
+    // Custom dynamics (as stored on the item) decide which sensors are recorded; the
+    // built-in response folds tilt into pressure instead.
+    const dyn = brush ? diffBrushOverride(brush, p.brushParams[brush.id])?.dyn : undefined;
+    const sensors = dynamicsSensors(dyn);
     return new StrokeRecorder({
       width: this.#width,
       streamline: brush?.streamline ?? 0.35,
       pressureMode: this.#host.pressureMode(),
-      usesPressure: brush?.pressure ?? false,
-      usesTilt: brush?.tilt ?? false,
+      usesPressure: (brush?.pressure ?? false) || sensors.has("p"),
+      usesTilt: (brush?.tilt ?? false) && !dyn,
       recordAngles,
+      recordTilt: sensors.has("t"),
+      recordSpeed: sensors.has("v"),
+      dynamics: dyn,
       stabilizerMode: brush?.pixelAligned ? "off" : p.stabilizer,
       stabilizerStrength: p.stabilizerStrength,
       dejitter: brush?.pixelAligned ? 0 : p.dejitter,
@@ -238,6 +249,8 @@ export class FreehandGesture implements Gesture {
         tool: match.tool,
         points: quantizePoints(match.points),
         angles: undefined,
+        tilt: undefined,
+        speed: undefined,
         style,
       };
       this.#snapped = snapped;
@@ -267,8 +280,7 @@ export class FreehandGesture implements Gesture {
     const last = samples.at(-1);
     if (last) this.#lastSample = last;
     this.#lastMoveAt = typeof performance !== "undefined" ? performance.now() : Date.now();
-    const angles = this.#rec.previewAngles();
-    this.#item = { ...this.#item, points: this.#rec.preview(), ...(angles ? { angles } : {}) };
+    this.#item = { ...this.#item, ...this.#rec.previewData() };
     this.#emitLive(this.#item);
     this.#armQuickShape();
   }
@@ -282,8 +294,7 @@ export class FreehandGesture implements Gesture {
     this.#clearHold();
     const noHead = { ...this.#item.style };
     delete noHead.head;
-    const { points, angles } = this.#rec.finishWithAngles();
-    const done: ScribbleItem = { ...this.#item, points, ...(angles ? { angles } : {}), style: noHead };
+    const done: ScribbleItem = { ...this.#item, ...this.#rec.finishWithAngles(), style: noHead };
     this.#commitAll(done);
     const next = this.#rec.chain();
     this.#rec = next;
@@ -328,20 +339,29 @@ export class FreehandGesture implements Gesture {
       if (this.#rec.full && !this.#rec.line) this.#chain();
     }
     this.#rec.finishTip(this.#host.prefs.stabilizerFinish);
-    let { points, angles } = this.#rec.finishWithAngles();
+    let { points, angles, tilt, speed } = this.#rec.finishWithAngles();
     if (points.length < 6) {
       // A tap: a dot (two coincident points so every renderer draws a blot).
       const p = points.length >= 3 ? points : this.#rec.preview();
       if (p.length < 3) return (this.cancel(), false);
       points = [p[0]!, p[1]!, p[2] ?? 0.5, p[0]! + 0.01 * px(this.#target), p[1]!, p[2] ?? 0.5];
       if (angles && angles.length) angles = [angles[0]!, angles[0]!];
+      const pair = (ch: number[] | undefined) => (ch ? [ch[0] ?? 0, ch[0] ?? 0] : undefined);
+      tilt = pair(tilt);
+      speed = pair(speed);
     }
     if (this.#spec.kind === "area") {
       const b = boundsOf(points);
       const min = 4 * px(this.#target);
       if (points.length < 9 || (b[2] - b[0] < min && b[3] - b[1] < min)) return (this.cancel(), false);
     }
-    this.#commitAll({ ...this.#item, points, ...(angles ? { angles } : {}) });
+    this.#commitAll({
+      ...this.#item,
+      points,
+      ...(angles ? { angles } : {}),
+      ...(tilt ? { tilt } : {}),
+      ...(speed ? { speed } : {}),
+    });
     return false;
   }
 

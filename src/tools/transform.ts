@@ -146,6 +146,12 @@ export function transformItem(item: ScribbleItem, m: Mat3, opts: TransformOption
     style = { ...style, brush: { ...style.brush, ang } };
   }
 
+  const dyn = style.brush?.dyn;
+  if (brush && mirrored && dyn?.ang) {
+    const { lo, hi } = dyn.ang;
+    style = { ...style, brush: { ...style.brush, dyn: { ...dyn, ang: { ...dyn.ang, lo: -lo + 0, hi: -hi + 0 } } } };
+  }
+
   const next: ScribbleItem = { ...item, tool, style, points: q(points) };
   if (item.kind !== "laser" && !identityLinear) next.size = Math.max(0.5, Math.round(item.size * k * 10) / 10);
   if (angles) next.angles = angles;

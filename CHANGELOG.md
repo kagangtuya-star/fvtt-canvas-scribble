@@ -35,6 +35,10 @@ First release.
 - Symmetry: 3/4/6× kaleidoscopes, draggable per-scene centre and rotatable axis; shapes, polygons and arrows mirror too.
 - Rulers: 1/2/3-point perspective and curve rulers (closed, parallel offset) per scene, editable on the canvas;
   Alt draws freely.
+- Brush dynamics: pressure, tilt, drawing speed, direction (absolute, relative, across the nib) and random (per dab,
+  per stroke, smooth noise) mapped onto size, flow, hardness, angle, flatness, scatter and spacing, with editable
+  monotone response curves and presets, several sensors per parameter, and a test pad in the Brush Studio. Marks keep
+  their dynamics and look the same on every client; marks without custom dynamics are drawn exactly as before.
 - Selection: marquee and lasso (touch / contain, add / subtract), multi-selection, select all, and a free-transform
   frame with scale, rotate, pivot, skew, distort, perspective, flip and numeric scale / angle. Batch `U` update
   message.

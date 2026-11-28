@@ -1,5 +1,5 @@
 import { LIMITS, LIVE_BATCH_MS, SOCKET_NAME } from "../constants.ts";
-import { encodeAngles, encodePoints } from "../core/codec.ts";
+import { encodeAngles, encodePoints, encodeUnits } from "../core/codec.ts";
 import { toWire, zKindOf } from "../core/sanitize.ts";
 import type { ScribbleItem } from "../core/types.ts";
 import { RateLimiter } from "../core/util.ts";
@@ -249,7 +249,13 @@ export class LiveSender {
   }
 
   #previewUpdate(previous: ScribbleItem, item: ScribbleItem): LiveUpdate | null {
-    if (previous.kind !== item.kind || previous.tool !== item.tool || !!previous.angles !== !!item.angles)
+    if (
+      previous.kind !== item.kind ||
+      previous.tool !== item.tool ||
+      !!previous.angles !== !!item.angles ||
+      !!previous.tilt !== !!item.tilt ||
+      !!previous.speed !== !!item.speed
+    )
       return { t: "s", item: toWire(item) };
     const a = previous.points;
     const b = item.points;
@@ -259,13 +265,25 @@ export class LiveSender {
       a[i] === b[i] &&
       a[i + 1] === b[i + 1] &&
       a[i + 2] === b[i + 2] &&
-      previous.angles?.[i / 3] === item.angles?.[i / 3]
+      previous.angles?.[i / 3] === item.angles?.[i / 3] &&
+      previous.tilt?.[i / 3] === item.tilt?.[i / 3] &&
+      previous.speed?.[i / 3] === item.speed?.[i / 3]
     )
       i += 3;
     if (i === a.length && i === b.length) return null;
     const pts = encodePoints(b.slice(i), zKindOf(item.kind));
     const ang = item.angles && encodeAngles(item.angles.slice(i / 3));
-    return { t: "p", id: item.id, from: i / 3, pts, ...(ang ? { ang } : {}) };
+    const tl = item.tilt && encodeUnits(item.tilt.slice(i / 3));
+    const sp = item.speed && encodeUnits(item.speed.slice(i / 3));
+    return {
+      t: "p",
+      id: item.id,
+      from: i / 3,
+      pts,
+      ...(ang ? { ang } : {}),
+      ...(tl ? { tl } : {}),
+      ...(sp ? { sp } : {}),
+    };
   }
 
   end(item: ScribbleItem, persist: boolean, onSent?: () => void): boolean {

@@ -192,3 +192,57 @@ export function quantizeAngles(angles: readonly number[]): number[] {
   for (let i = 0; i < angles.length; i++) out[i] = binToAngle(angleToBin(angles[i]!));
   return out;
 }
+
+/* -------------------------------------------- */
+/*  Per-point unit channels (tilt, speed: 0..1) */
+/* -------------------------------------------- */
+
+const UNIT_SCALE = 255;
+const unitBin = (v: number) => Math.round(Math.min(1, Math.max(0, Number.isFinite(v) ? v : 0)) * UNIT_SCALE);
+
+/** Parallel 0..1 values at 1/255, delta + zig-zag + varint (≈ 1 byte per point). */
+export function encodeUnits(values: readonly number[]): string {
+  const bytes: number[] = [];
+  let prev = 0;
+  for (const v of values) {
+    const cur = unitBin(v);
+    writeVarint(bytes, cur - prev);
+    prev = cur;
+  }
+  return "1" + toBase64(Uint8Array.from(bytes));
+}
+
+export function decodeUnits(text: unknown, maxPoints = Infinity): number[] | null {
+  if (typeof text !== "string" || text[0] !== "1") return null;
+  let bytes: Uint8Array;
+  try {
+    bytes = fromBase64(text.slice(1));
+  } catch {
+    return null;
+  }
+  const out: number[] = [];
+  let acc = 0;
+  let value = 0;
+  let shift = 0;
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i]!;
+    if (shift > 28) return null;
+    value |= (b & 0x7f) << shift;
+    if (b & 0x80) {
+      shift += 7;
+      continue;
+    }
+    acc += unzigzag(value);
+    value = 0;
+    shift = 0;
+    if (acc < 0 || acc > UNIT_SCALE) return null;
+    out.push(acc / UNIT_SCALE);
+    if (out.length >= maxPoints) break;
+  }
+  if (shift !== 0) return null;
+  return out;
+}
+
+export function quantizeUnits(values: readonly number[]): number[] {
+  return values.map((v) => unitBin(v) / UNIT_SCALE);
+}

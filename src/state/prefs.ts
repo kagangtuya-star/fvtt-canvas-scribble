@@ -1,4 +1,5 @@
 import { BRUSHES, DEFAULT_PALETTE, UI_SIZE } from "../brush/brushes.ts";
+import { sanitizeDynamics } from "../brush/dynamics.ts";
 import { STABILIZER_MODES } from "../brush/stabilizer.ts";
 import type { StabilizerMode } from "../brush/stabilizer.ts";
 import { SYMMETRY_MODES } from "../brush/symmetry.ts";
@@ -256,6 +257,8 @@ export function normalizeBrushOverride(raw: unknown): BrushOverride {
   if (grn !== undefined) out.grn = Math.round(grn * 100) / 100;
   const rgh = optNumIn(b.rgh, 0, 3);
   if (rgh !== undefined) out.rgh = Math.round(rgh * 100) / 100;
+  const dyn = sanitizeDynamics(b.dyn);
+  if (dyn) out.dyn = dyn;
   return out;
 }
 

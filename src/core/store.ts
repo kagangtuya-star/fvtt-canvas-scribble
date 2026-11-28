@@ -1,4 +1,5 @@
 import { BRUSHES, resolveBrushParams } from "../brush/brushes.ts";
+import { dynamicsMaxScale, itemDynamics } from "../brush/dynamics.ts";
 import { LIMITS } from "../constants.ts";
 import { boundsOf } from "./geometry.ts";
 import type { Bounds } from "./geometry.ts";
@@ -45,6 +46,14 @@ export function itemBounds(item: ScribbleItem): Bounds {
       if (p.scatter > 0) pad += item.size * (p.scatter + 0.5);
       if (p.hardness < 0.6) pad += item.size * (1 - p.hardness) * 0.8;
       if (brush.pixelAligned) pad += item.size;
+      const dyn = itemDynamics(item, brush);
+      if (dyn) {
+        // Dynamics may widen the nib, soften it or push dabs further out.
+        const grow = Math.max(1, dynamicsMaxScale(dyn, "size"));
+        pad *= grow;
+        if (p.scatter > 0) pad += item.size * grow * p.scatter * Math.max(0, dynamicsMaxScale(dyn, "sct") - 1);
+        if (dyn.hrd?.src.length) pad += item.size * grow * 0.8;
+      }
     }
   }
   if (item.kind === "shape" && item.tool === "arrow") pad += item.size * 5;

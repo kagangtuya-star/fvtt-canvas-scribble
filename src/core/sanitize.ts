@@ -1,5 +1,6 @@
 import { LIMITS } from "../constants.ts";
-import { decodeAngles, decodePoints, encodeAngles, encodePoints } from "./codec.ts";
+import { sanitizeDynamics } from "../brush/dynamics.ts";
+import { decodeAngles, decodePoints, decodeUnits, encodeAngles, encodePoints, encodeUnits } from "./codec.ts";
 import type { ZKind } from "./codec.ts";
 import { cleanText } from "./text-layout.ts";
 import { ANGLE_MODES, BLEND_MODES, BRUSH_IDS, FILL_PATTERNS, MAP_LAYERS, SCHEMA_VERSION, SHAPE_IDS } from "./types.ts";
@@ -27,10 +28,14 @@ import type {
 export const zKindOf = (kind: Kind): ZKind => (kind === "laser" ? "time" : "pressure");
 
 export function toWire(item: ScribbleItem): WireItem {
-  const { points, angles, erase, ...rest } = item;
+  const { points, angles, tilt, speed, erase, ...rest } = item;
   const wire: WireItem = { ...rest, points: encodePoints(points, zKindOf(item.kind)) };
   if (angles?.length) wire.angles = encodeAngles(angles);
   else delete wire.angles;
+  if (tilt?.length) wire.tilt = encodeUnits(tilt);
+  else delete wire.tilt;
+  if (speed?.length) wire.speed = encodeUnits(speed);
+  else delete wire.speed;
   if (erase?.length) {
     wire.erase = erase.map((m) => {
       const wm: WireMask = { size: m.size, p: encodePoints(m.points) };
@@ -104,6 +109,8 @@ function sanitizeBrushOverride(raw: unknown): BrushOverride | undefined {
   if (grn !== undefined) out.grn = Math.round(grn * 100) / 100;
   const rgh = optNum(b.rgh, 0, 3);
   if (rgh !== undefined) out.rgh = Math.round(rgh * 100) / 100;
+  const dyn = sanitizeDynamics(b.dyn);
+  if (dyn) out.dyn = dyn;
   return Object.keys(out).length ? out : undefined;
 }
 
@@ -197,6 +204,14 @@ export function sanitizeItem(raw: unknown, ctx: SanitizeContext): ScribbleItem |
     const decoded = decodeAngles(r.angles, points.length / 3);
     if (decoded?.length === points.length / 3) angles = decoded;
   }
+  // Dynamics channels must match the points one to one, otherwise they are dropped.
+  const channel = (raw: unknown): number[] | undefined => {
+    if (raw === undefined || kind !== "stroke") return undefined;
+    const decoded = decodeUnits(raw, points.length / 3);
+    return decoded?.length === points.length / 3 ? decoded : undefined;
+  };
+  const tilt = channel(r.tilt);
+  const speed = channel(r.speed);
 
   // Timing: createdAt within a tolerated skew of the receiver's clock.
   let createdAt = num(r.createdAt, 0, Number.MAX_SAFE_INTEGER, ctx.now);
@@ -236,6 +251,8 @@ export function sanitizeItem(raw: unknown, ctx: SanitizeContext): ScribbleItem |
     revision: Math.trunc(num(r.revision, 0, 1e9, 0)),
   };
   if (angles) item.angles = angles;
+  if (tilt) item.tilt = tilt;
+  if (speed) item.speed = speed;
   if (kind === "text") {
     if (typeof r.text !== "string") return null;
     // Plain text only: strip control characters except newlines; rendered with fillText, never as HTML.

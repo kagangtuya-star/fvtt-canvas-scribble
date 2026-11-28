@@ -1,4 +1,5 @@
 import type { AngleMode, BlendMode, BrushId, BrushOverride, TipShape } from "../core/types.ts";
+import { canonicalDynamics, defaultDynamics, sanitizeDynamics } from "./dynamics.ts";
 
 /**
  * Brush definitions. A brush is data: it names a renderer and the parameters
@@ -545,6 +546,11 @@ export function diffBrushOverride(brush: BrushDefinition, over?: BrushOverride):
   if (over.sct !== undefined && Math.abs(over.sct - brush.scatter) > 0.005) out.sct = Math.round(over.sct * 100) / 100;
   if (over.grn !== undefined && Math.abs(over.grn - brush.grain) > 0.005) out.grn = Math.round(over.grn * 100) / 100;
   if (over.rgh !== undefined && over.rgh > 0.01) out.rgh = Math.round(over.rgh * 100) / 100;
+  if (over.dyn !== undefined) {
+    // Dynamics equal to the built-in response are omitted: the mark keeps the original painter path.
+    const dyn = sanitizeDynamics(over.dyn);
+    if (dyn && canonicalDynamics(dyn) !== canonicalDynamics(defaultDynamics(brush))) out.dyn = dyn;
+  }
   return Object.keys(out).length ? out : undefined;
 }
 

@@ -6,7 +6,14 @@ import { BRUSHES, diffBrushOverride, resolveBrushParams } from "./brush/brushes.
 import type { PressureMode } from "./brush/recorder.ts";
 import type { Modifiers } from "./brush/shapes.ts";
 import { LIMITS, PENDING_TIMEOUT_MS } from "./constants.ts";
-import { decodeAngles, decodePoints, quantizeAngles, quantizePoints } from "./core/codec.ts";
+import {
+  decodeAngles,
+  decodePoints,
+  decodeUnits,
+  quantizeAngles,
+  quantizePoints,
+  quantizeUnits,
+} from "./core/codec.ts";
 import { boundsOf, simplifyToLimit } from "./core/geometry.ts";
 import type { Bounds } from "./core/geometry.ts";
 import { History } from "./core/history.ts";
@@ -555,6 +562,8 @@ export class Session implements ToolHost, RenderHost {
           ...raw,
           points: quantizePoints(raw.points, zKindOf(raw.kind)),
           ...(raw.angles?.length ? { angles: quantizeAngles(raw.angles) } : {}),
+          ...(raw.tilt?.length ? { tilt: quantizeUnits(raw.tilt) } : {}),
+          ...(raw.speed?.length ? { speed: quantizeUnits(raw.speed) } : {}),
           createdAt: now,
           expiresAt: life === null ? null : now + life,
         };
@@ -2172,7 +2181,16 @@ export class Session implements ToolHost, RenderHost {
           if (!decoded || decoded.length !== pts.length / 3 || (entry.item.angles?.length ?? 0) < msg.from) return;
           angles = (entry.item.angles ?? []).slice(0, msg.from).concat(decoded);
         }
-        this.store.put({ ...entry.item, points, angles }, "live");
+        // Dynamics channels follow the same rule as angles: aligned with the points or dropped.
+        const channel = (text: string | undefined, have: number[] | undefined): number[] | undefined => {
+          if (!text) return undefined;
+          const decoded = decodeUnits(text, pts.length / 3);
+          if (!decoded || decoded.length !== pts.length / 3 || (have?.length ?? 0) < msg.from) return undefined;
+          return (have ?? []).slice(0, msg.from).concat(decoded);
+        };
+        const tilt = channel(msg.tl, entry.item.tilt);
+        const speed = channel(msg.sp, entry.item.speed);
+        this.store.put({ ...entry.item, points, angles, tilt, speed }, "live");
         this.#liveSeen.set(msg.id, performance.now());
         return;
       }

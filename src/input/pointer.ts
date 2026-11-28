@@ -86,6 +86,7 @@ export class PointerInput {
       tiltX: e.tiltX,
       tiltY: e.tiltY,
       twist: e.twist,
+      altitudeAngle: (e as PointerEvent & { altitudeAngle?: number }).altitudeAngle,
     };
   }
 

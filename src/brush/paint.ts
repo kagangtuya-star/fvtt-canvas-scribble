@@ -4,6 +4,8 @@ import type { BlendMode, BrushId, ScribbleItem } from "../core/types.ts";
 import { clamp, hashString, luminance, rng } from "../core/util.ts";
 import { BRUSHES, resolveBrushParams } from "./brushes.ts";
 import type { BrushDefinition, ResolvedBrushParams } from "./brushes.ts";
+import { compileDynamics, dynamicsMaxScale, dynamicsTargets, itemDynamics } from "./dynamics.ts";
+import type { CompiledDynamics, DynFrame } from "./dynamics.ts";
 import { outline, samples } from "./freehand.ts";
 import { paintRoughArea, paintRoughShape, usesRough } from "./rough-shapes.ts";
 import { arrowHead, arrowHeadLength, pathTailReference } from "./shapes.ts";
@@ -208,6 +210,9 @@ interface SpaceSample {
   x: number;
   y: number;
   p: number;
+  /** Tilt and speed dynamics channels (0 when not recorded). */
+  t: number;
+  v: number;
   /** Recorded pen angle (radians) or NaN if none. */
   ang: number;
   /** Smoothed tangent angle (radians). */
@@ -225,6 +230,10 @@ function buildSpaceSamples(item: ScribbleItem, stepUnits: number): SpaceSample[]
   const px = (i: number) => flat[clamp(i, 0, n - 1) * 3]!;
   const py = (i: number) => flat[clamp(i, 0, n - 1) * 3 + 1]!;
   const pa = (i: number) => (hasAng ? angles[clamp(i, 0, angles.length - 1)]! : Number.NaN);
+  const tilt = item.tilt?.length === n ? item.tilt : null;
+  const speed = item.speed?.length === n ? item.speed : null;
+  const pt = (i: number) => (tilt ? tilt[clamp(i, 0, n - 1)]! : 0);
+  const pv = (i: number) => (speed ? speed[clamp(i, 0, n - 1)]! : 0);
 
   const out: SpaceSample[] = [];
   let run = 0;
@@ -232,7 +241,7 @@ function buildSpaceSamples(item: ScribbleItem, stepUnits: number): SpaceSample[]
   let lastY = flat[1]!;
 
   if (n === 1) {
-    return [{ x: lastX, y: lastY, p: flat[2]!, ang: pa(0), tan: 0, run: 0 }];
+    return [{ x: lastX, y: lastY, p: flat[2]!, t: pt(0), v: pv(0), ang: pa(0), tan: 0, run: 0 }];
   }
 
   for (let i = 0; i < n - 1; i++) {
@@ -248,6 +257,10 @@ function buildSpaceSamples(item: ScribbleItem, stepUnits: number): SpaceSample[]
     const p2 = flat[(i + 1) * 3 + 2]!;
     const a1 = pa(i);
     const a2 = pa(i + 1);
+    const t1 = pt(i);
+    const t2c = pt(i + 1);
+    const v1 = pv(i);
+    const v2 = pv(i + 1);
     const segLen = Math.hypot(x2 - x1, y2 - y1);
     const count = Math.max(1, Math.min(64, Math.ceil(segLen / step)));
     for (let k = 0; k < count; k++) {
@@ -265,6 +278,8 @@ function buildSpaceSamples(item: ScribbleItem, stepUnits: number): SpaceSample[]
         x,
         y,
         p: p1 + (p2 - p1) * t,
+        t: t1 + (t2c - t1) * t,
+        v: v1 + (v2 - v1) * t,
         ang: hasAng ? lerpAngle(a1, a2, t) : Number.NaN,
         tan: 0,
         run,
@@ -274,7 +289,7 @@ function buildSpaceSamples(item: ScribbleItem, stepUnits: number): SpaceSample[]
   const ex = flat[(n - 1) * 3]!;
   const ey = flat[(n - 1) * 3 + 1]!;
   run += Math.hypot(ex - lastX, ey - lastY);
-  out.push({ x: ex, y: ey, p: flat[(n - 1) * 3 + 2]!, ang: pa(n - 1), tan: 0, run });
+  out.push({ x: ex, y: ey, p: flat[(n - 1) * 3 + 2]!, t: pt(n - 1), v: pv(n - 1), ang: pa(n - 1), tan: 0, run });
 
   // Compute smoothed tangents.
   let lastTan = 0;
@@ -306,6 +321,56 @@ function sampleAngle(s: SpaceSample, params: ResolvedBrushParams): number {
     default:
       return baseRad;
   }
+}
+
+/* -------------------------------------------- */
+/*  Brush dynamics                              */
+/* -------------------------------------------- */
+
+/** Per-sample parameter modulation: multipliers, plus `ang` as a radian offset. */
+interface DabMods {
+  size: number;
+  flw: number;
+  hrd: number;
+  ang: number;
+  asp: number;
+  sct: number;
+  spc: number;
+}
+
+type SampleDynamics = (s: SpaceSample, i: number, nib: number) => DabMods;
+
+/**
+ * Evaluator of an item's custom dynamics, or `null` when the item uses the
+ * brush's built-in response. The returned object is reused between calls.
+ */
+function sampleDynamics(
+  item: ScribbleItem,
+  brush: BrushDefinition,
+  list: readonly SpaceSample[],
+): SampleDynamics | null {
+  const dyn = itemDynamics(item, brush);
+  if (!dyn) return null;
+  const fns: CompiledDynamics = compileDynamics(dyn, hashString(item.id), item.size, dynamicsTargets(brush));
+  const frame: DynFrame = { p: 0.5, t: 0, v: 0, tan: 0, tan0: list[0]?.tan ?? 0, nib: 0, run: 0, i: 0 };
+  const mods: DabMods = { size: 1, flw: 1, hrd: 1, ang: 0, asp: 1, sct: 1, spc: 1 };
+  return (s, i, nib) => {
+    frame.p = s.p;
+    frame.t = s.t;
+    frame.v = s.v;
+    frame.tan = s.tan;
+    frame.nib = nib;
+    frame.run = s.run;
+    frame.i = i;
+    mods.size = fns.size ? clamp(fns.size(frame), 0.02, 2) : 1;
+    mods.flw = fns.flw ? clamp(fns.flw(frame), 0, 2) : 1;
+    mods.hrd = fns.hrd ? clamp(fns.hrd(frame), 0, 2) : 1;
+    mods.ang = fns.ang ? (fns.ang(frame) * Math.PI) / 180 : 0;
+    mods.asp = fns.asp ? clamp(fns.asp(frame), 0.05, 2) : 1;
+    mods.sct = fns.sct ? clamp(fns.sct(frame), 0, 2) : 1;
+    mods.spc = fns.spc ? clamp(fns.spc(frame), 0.25, 4) : 1;
+    return mods;
+  };
 }
 
 /* -------------------------------------------- */
@@ -425,14 +490,31 @@ function freehandOutline(item: ScribbleItem, brush: BrushDefinition, view: View,
     if (cached) return cached;
   }
   const w = item.size;
-  const pts = resample(item.points, spacingFor(w, view));
   const curve = brush.pressureCurve;
+  let pts: number[];
+  let thinning = brush.thinning;
+  let easing = curve === 1 ? undefined : (p: number) => Math.pow(Math.max(0, p), curve);
+  // Dynamics (including random sample indices) use a fixed step in stroke space.
+  const list = itemDynamics(item, brush) ? buildSpaceSamples(item, Math.max(0.6, Math.min(w / 5, 6))) : null;
+  const dyn = list ? sampleDynamics(item, brush, list) : null;
+  if (list && dyn) {
+    // Custom dynamics: the z channel carries the width multiplier m as m / 2, which with
+    // thinning 1 and no easing gives perfect-freehand a diameter of exactly size × m.
+    const nib = (resolveBrushParams(brush, item.style.brush).angle * Math.PI) / 180;
+    pts = [];
+    for (let i = 0; i < list.length; i++) {
+      const s = list[i]!;
+      pts.push(s.x, s.y, dyn(s, i, nib).size / 2);
+    }
+    thinning = 1;
+    easing = undefined;
+  } else pts = resample(item.points, spacingFor(w, view));
   const poly = outline(pts, {
     size: w,
-    thinning: brush.thinning,
+    thinning,
     smoothing: brush.smoothing,
     streamline: 0,
-    easing: curve === 1 ? undefined : (p: number) => Math.pow(Math.max(0, p), curve),
+    easing,
     taperStart: brush.taperStart * w,
     taperEnd: live ? 0 : brush.taperEnd * w,
     cap: brush.cap,
@@ -595,21 +677,29 @@ function paintChisel(ctx: Ctx2D, item: ScribbleItem, view: View, brush: BrushDef
   const list = buildSpaceSamples(item, step);
   if (!list.length) return;
 
-  const footprintAt = (s: SpaceSample): [number, number][] => {
+  const dyn = sampleDynamics(item, brush, list);
+  const footprintAt = (s: SpaceSample, i: number): [number, number][] => {
+    const nib = sampleAngle(s, params);
+    if (dyn) {
+      const m = dyn(s, i, nib);
+      const hw = (w * m.size) / 2;
+      const hh = Math.max(0.25, hw * clamp(params.aspect * m.asp, 0.05, 1));
+      return nibFootprint(s.x, s.y, hw, hh, nib + m.ang, params.corner);
+    }
     const p = brush.pressure ? Math.pow(clamp(s.p, 0.05, 1), brush.pressureCurve) : 0.5;
     const scale = brush.pressure ? clamp(1 - brush.thinning * (0.5 - p) * 2, 0.18, 1.35) : 1;
     const hw = (w * scale) / 2;
     const hh = Math.max(0.25, hw * clamp(params.aspect, 0.05, 1));
-    return nibFootprint(s.x, s.y, hw, hh, sampleAngle(s, params), params.corner);
+    return nibFootprint(s.x, s.y, hw, hh, nib, params.corner);
   };
 
   const path = new Path2D();
   if (list.length === 1) {
-    addHull(path, footprintAt(list[0]!));
+    addHull(path, footprintAt(list[0]!, 0));
   } else {
-    let prev = footprintAt(list[0]!);
+    let prev = footprintAt(list[0]!, 0);
     for (let i = 1; i < list.length; i++) {
-      const cur = footprintAt(list[i]!);
+      const cur = footprintAt(list[i]!, i);
       addHull(path, [...prev, ...cur]);
       prev = cur;
     }
@@ -654,6 +744,8 @@ interface DabContext {
   rand: () => number;
   noise: ((x: number, y: number) => number) | null;
   bristleSpec: { offset: number; width: number; alpha: number; phase: number }[] | null;
+  /** Custom dynamics, or null for the brush's built-in response. */
+  dyn: SampleDynamics | null;
 }
 
 function makeBristleSpec(count: number, seed: number) {
@@ -673,14 +765,40 @@ function makeBristleSpec(count: number, seed: number) {
   return out;
 }
 
-function emitSingleDab(dc: DabContext, s: SpaceSample): void {
+/** Dynamic hardness is quantised so the tip sprite cache stays small. */
+const HARDNESS_STEPS = 10;
+
+/** Stretch the cached round tip into a fibre or droplet at the current origin. */
+function drawSoftEllipse(ctx: Ctx2D, sprite: AnyCanvas, width: number, height: number): void {
+  const w = width / 0.92;
+  const h = height / 0.92;
+  ctx.drawImage(sprite as CanvasImageSource, -w / 2, -h / 2, w, h);
+}
+
+/**
+ * Stamp one dab. Returns the spacing multiplier for the next dab (1 without
+ * spacing dynamics). Without custom dynamics the brush's built-in pressure
+ * response applies, exactly as before dynamics existed.
+ */
+function emitSingleDab(dc: DabContext, s: SpaceSample, index: number): number {
   const { ctx, item, brush, params, rand } = dc;
   const w = item.size;
+  const baseAng = sampleAngle(s, params);
+  const m = dc.dyn ? dc.dyn(s, index, baseAng) : null;
+  const mapped = m ? item.style.brush?.dyn : undefined;
   const pressure = brush.pressure ? Math.pow(clamp(s.p, 0.05, 1), brush.pressureCurve) : 0.6;
-  const sizeScale = brush.pressure ? clamp(1 - brush.thinning * (0.5 - pressure) * 2, 0.18, 1.35) : 1;
+  const sizeScale = m ? m.size : brush.pressure ? clamp(1 - brush.thinning * (0.5 - pressure) * 2, 0.18, 1.35) : 1;
+  const aspect = m ? clamp(params.aspect * m.asp, 0.05, 1) : params.aspect;
+  const hardness = m
+    ? Math.round(clamp(params.hardness * m.hrd, 0, 1) * HARDNESS_STEPS) / HARDNESS_STEPS
+    : params.hardness;
+  const scatter = m ? params.scatter * m.sct : params.scatter;
+  /** Built-in pressure → flow factor (`lo + k·pressure`), replaced by the flow dynamics when present. */
+  const flowFactor = (lo: number, k: number) => (m ? m.flw : brush.pressure ? lo + pressure * k : 1);
+  const spacingOut = m ? m.spc : 1;
   const dabW = w * sizeScale;
-  const dabH = Math.max(0.4, dabW * clamp(params.aspect, 0.05, 1));
-  const ang = sampleAngle(s, params);
+  const dabH = Math.max(0.4, dabW * clamp(aspect, 0.05, 1));
+  const ang = m ? baseAng + m.ang : baseAng;
 
   if (brush.pixelAligned) {
     const cell = Math.max(0.5, w);
@@ -688,56 +806,81 @@ function emitSingleDab(dc: DabContext, s: SpaceSample): void {
     const gy = Math.floor(s.y / cell) * cell;
     ctx.fillStyle = item.color;
     ctx.fillRect(gx, gy, cell, cell);
-    return;
+    return spacingOut;
   }
+
+  const splatter = brush.id === "splatter" || params.scatter >= 0.6;
+  const feathered =
+    mapped?.hrd && hardness < 0.96 && (dc.bristleSpec || splatter)
+      ? getTipSprite("round", 1, 0, hardness, item.color)
+      : null;
 
   if (brush.tip === "bristle" && dc.bristleSpec) {
     const nx = -Math.sin(ang);
     const ny = Math.cos(ang);
-    const tx = Math.cos(ang);
-    const ty = Math.sin(ang);
     const noise = dc.noise!;
     const fiberBaseW = Math.max(0.45, (dabW / dc.bristleSpec.length) * 1.15);
+    let x = s.x;
+    let y = s.y;
+    if (mapped?.sct && params.scatter > 0) {
+      const a = rand() * Math.PI * 2;
+      const dist = Math.sqrt(rand()) * w * scatter * 0.6;
+      x += Math.cos(a) * dist;
+      y += Math.sin(a) * dist;
+    }
     ctx.fillStyle = item.color;
     for (const f of dc.bristleSpec) {
       const wobble = noise(s.run * 0.045 + f.phase, f.offset * 6) * dabW * 0.06;
       const lateral = f.offset * dabW + wobble;
-      const fx = s.x + nx * lateral;
-      const fy = s.y + ny * lateral;
+      const fx = x + nx * lateral;
+      const fy = y + ny * lateral;
       const fw = fiberBaseW * f.width;
       const fh = Math.max(0.4, dabH * 0.55);
-      const density = clamp((0.55 + 0.55 * pressure) * params.flow * f.alpha, 0.04, 1);
+      const density = clamp((m ? m.flw : 0.55 + 0.55 * pressure) * params.flow * f.alpha, 0.04, 1);
       ctx.save();
       ctx.globalAlpha = density;
       ctx.translate(fx, fy);
       ctx.rotate(ang);
-      ctx.beginPath();
-      ctx.ellipse(0, 0, fh / 2, fw / 2, 0, 0, Math.PI * 2);
-      ctx.fill();
+      if (feathered) drawSoftEllipse(ctx, feathered, fh, fw);
+      else {
+        ctx.beginPath();
+        ctx.ellipse(0, 0, fh / 2, fw / 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
       ctx.restore();
     }
-    void tx;
-    void ty;
-    return;
+    return spacingOut;
   }
 
-  // Splatter / multi-droplet scatter mode
-  if (brush.id === "splatter" || params.scatter >= 0.6) {
+  // Splatter / multi-droplet scatter mode (chosen by the base scatter so the random sequence stays stable).
+  if (splatter) {
     const drops = Math.max(2, Math.min(10, Math.round(3 + params.scatter * 3.5)));
+    const turn = mapped?.ang ? ang : 0;
+    const dropAspect = mapped?.asp ? aspect : 1;
     ctx.fillStyle = item.color;
     for (let k = 0; k < drops; k++) {
-      const a = rand() * Math.PI * 2;
-      const dist = Math.pow(rand(), 0.75) * w * params.scatter;
+      // Rotate the cloud as well as individual drops so angle still affects round drops.
+      const a = rand() * Math.PI * 2 + turn;
+      const dist = Math.pow(rand(), 0.75) * w * scatter;
       const dr = dabW * (0.06 + Math.pow(rand(), 1.8) * 0.24);
       const sx = s.x + Math.cos(a) * dist;
       const sy = s.y + Math.sin(a) * dist;
-      ctx.globalAlpha = clamp(params.flow * (0.45 + rand() * 0.55) * (0.4 + pressure * 0.7), 0.05, 1);
-      ctx.beginPath();
-      ctx.arc(sx, sy, dr, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.globalAlpha = clamp(params.flow * (0.45 + rand() * 0.55) * (m ? m.flw : 0.4 + pressure * 0.7), 0.05, 1);
+      if (feathered) {
+        ctx.save();
+        ctx.translate(sx, sy);
+        if (dropAspect !== 1 && ang) ctx.rotate(ang);
+        drawSoftEllipse(ctx, feathered, dr * 2, dr * 2 * dropAspect);
+        ctx.restore();
+      } else {
+        ctx.beginPath();
+        if (dropAspect === 1) ctx.arc(sx, sy, dr, 0, Math.PI * 2);
+        else ctx.ellipse(sx, sy, dr, dr * dropAspect, ang, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
     ctx.globalAlpha = 1;
-    return;
+    return spacingOut;
   }
 
   // Scatter offset (chalk / charcoal / textured brush)
@@ -745,7 +888,7 @@ function emitSingleDab(dc: DabContext, s: SpaceSample): void {
   let dy = 0;
   if (params.scatter > 0) {
     const a = rand() * Math.PI * 2;
-    const dist = Math.sqrt(rand()) * w * params.scatter * 0.6;
+    const dist = Math.sqrt(rand()) * w * scatter * 0.6;
     dx = Math.cos(a) * dist;
     dy = Math.sin(a) * dist;
   }
@@ -753,28 +896,38 @@ function emitSingleDab(dc: DabContext, s: SpaceSample): void {
   const py = s.y + dy;
 
   // Soft / feathered tips or semi-soft rectangular tips use pre-baked sprite cache.
-  if (params.hardness < 0.96) {
+  if (hardness < 0.96) {
+    // Dynamic flatness stretches a sprite of the base aspect instead of baking one per value.
     const sprite = getTipSprite(
       brush.tip === "rect" ? "rect" : "round",
       params.aspect,
       params.corner,
-      params.hardness,
+      hardness,
       item.color,
     );
     const drawSize = dabW / 0.92;
-    const flowAlpha = clamp(params.flow * (brush.pressure ? 0.35 + pressure * 0.75 : 1), 0.02, 1);
+    const stretch = m ? aspect / clamp(params.aspect, 0.05, 1) : 1;
+    const flowAlpha = clamp(params.flow * flowFactor(0.35, 0.75), 0.02, 1);
     ctx.save();
     ctx.globalAlpha = flowAlpha;
     ctx.translate(px, py);
     if (ang !== 0) ctx.rotate(ang);
-    ctx.drawImage(sprite as CanvasImageSource, -drawSize / 2, -drawSize / 2, drawSize, drawSize);
+    if (stretch === 1) ctx.drawImage(sprite as CanvasImageSource, -drawSize / 2, -drawSize / 2, drawSize, drawSize);
+    else
+      ctx.drawImage(
+        sprite as CanvasImageSource,
+        -drawSize / 2,
+        (-drawSize * stretch) / 2,
+        drawSize,
+        drawSize * stretch,
+      );
     ctx.restore();
-    return;
+    return spacingOut;
   }
 
   // Crisp hard-edge dab (chalk / hard round / hard rect).
   ctx.save();
-  ctx.globalAlpha = clamp(params.flow * (brush.pressure ? 0.4 + pressure * 0.7 : 1), 0.04, 1);
+  ctx.globalAlpha = clamp(params.flow * flowFactor(0.4, 0.7), 0.04, 1);
   ctx.fillStyle = item.color;
   ctx.translate(px, py);
   if (ang !== 0) ctx.rotate(ang);
@@ -787,6 +940,7 @@ function emitSingleDab(dc: DabContext, s: SpaceSample): void {
     ctx.fill();
   }
   ctx.restore();
+  return spacingOut;
 }
 
 function paintDab(ctx: Ctx2D, item: ScribbleItem, brush: BrushDefinition): void {
@@ -803,12 +957,15 @@ function paintDab(ctx: Ctx2D, item: ScribbleItem, brush: BrushDefinition): void 
   const noise = brush.tip === "bristle" ? seededNoise2D(seed ^ 0x91e10da5) : null;
   const bristleSpec = brush.tip === "bristle" ? makeBristleSpec(brush.bristles || 12, seed) : null;
 
-  const dc: DabContext = { ctx, item, brush, params, rand, noise, bristleSpec };
+  const dyn = brush.pixelAligned ? null : sampleDynamics(item, brush, list);
+  const dc: DabContext = { ctx, item, brush, params, rand, noise, bristleSpec, dyn };
 
   if (brush.pixelAligned) ctx.imageSmoothingEnabled = false;
 
-  emitSingleDab(dc, list[0]!);
-  let nextRun = step;
+  // Spacing dynamics scale the distance to the next dab (never below the per-item dab budget's step).
+  const minStep = totalRun / MAX_DABS_PER_ITEM;
+  const nextStep = (mul: number) => (mul === 1 ? step : Math.max(rawStep * mul, minStep, 0.05));
+  let nextRun = nextStep(emitSingleDab(dc, list[0]!, 0));
   let emitted = 1;
   for (let i = 1; i < list.length && emitted < MAX_DABS_PER_ITEM; i++) {
     const s = list[i]!;
@@ -821,12 +978,14 @@ function paintDab(ctx: Ctx2D, item: ScribbleItem, brush: BrushDefinition): void 
         x: prev.x + (s.x - prev.x) * f,
         y: prev.y + (s.y - prev.y) * f,
         p: prev.p + (s.p - prev.p) * f,
+        t: prev.t + (s.t - prev.t) * f,
+        v: prev.v + (s.v - prev.v) * f,
         ang: Number.isFinite(prev.ang) && Number.isFinite(s.ang) ? lerpAngle(prev.ang, s.ang, f) : s.ang,
         tan: lerpAngle(prev.tan, s.tan, f),
         run: nextRun,
       };
-      emitSingleDab(dc, interp);
-      nextRun += step;
+      const mul = emitSingleDab(dc, interp, emitted);
+      nextRun += nextStep(mul);
       emitted++;
     }
   }
@@ -851,7 +1010,10 @@ function paintDab(ctx: Ctx2D, item: ScribbleItem, brush: BrushDefinition): void 
         if (s.x > maxX) maxX = s.x;
         if (s.y > maxY) maxY = s.y;
       }
-      const pad = w * (1 + params.scatter) + 4;
+      const spec = dyn ? item.style.brush?.dyn : undefined;
+      const grow = Math.max(1, dynamicsMaxScale(spec, "size"));
+      const spread = Math.max(1, dynamicsMaxScale(spec, "sct"));
+      const pad = w * (grow + params.scatter * spread) + 4;
       ctx.fillRect(minX - pad, minY - pad, maxX - minX + pad * 2, maxY - minY + pad * 2);
       ctx.restore();
     }

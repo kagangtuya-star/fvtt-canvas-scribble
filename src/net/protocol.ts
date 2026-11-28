@@ -62,7 +62,9 @@ export const CLEAR_SCOPES: readonly ClearScope[] = [
 export type NackReason = "permission" | "budget" | "count" | "invalid";
 
 type Envelope = { v: number; scene: string };
-export type LiveUpdate = { t: "s"; item: WireItem } | { t: "p"; id: string; from: number; pts: string; ang?: string };
+export type LiveUpdate =
+  | { t: "s"; item: WireItem }
+  | { t: "p"; id: string; from: number; pts: string; ang?: string; tl?: string; sp?: string };
 
 export type Message =
   | (Envelope & LiveUpdate)
@@ -109,7 +111,9 @@ function isLiveUpdate(raw: unknown): raw is LiveUpdate {
     Number.isInteger(raw.from) &&
     (raw.from as number) >= 0 &&
     typeof raw.pts === "string" &&
-    (raw.ang === undefined || typeof raw.ang === "string")
+    (raw.ang === undefined || typeof raw.ang === "string") &&
+    (raw.tl === undefined || typeof raw.tl === "string") &&
+    (raw.sp === undefined || typeof raw.sp === "string")
   );
 }
 
@@ -191,9 +195,22 @@ export function parseMessage(raw: unknown): Message | null {
 /** Rate-limit cost of a message: [messages, points, items]. */
 export function messageCost(msg: Message): [number, number, number] {
   const points = (item: WireItem) =>
-    Math.ceil((String(item?.points ?? "").length + String(item?.angles ?? "").length) / 6);
+    Math.ceil(
+      (String(item?.points ?? "").length +
+        String(item?.angles ?? "").length +
+        String(item?.tilt ?? "").length +
+        String(item?.speed ?? "").length) /
+        6,
+    );
   const liveCost = (update: LiveUpdate): [number, number] =>
-    update.t === "s" ? [points(update.item), 1] : [Math.ceil((update.pts.length + (update.ang?.length ?? 0)) / 6), 0];
+    update.t === "s"
+      ? [points(update.item), 1]
+      : [
+          Math.ceil(
+            (update.pts.length + (update.ang?.length ?? 0) + (update.tl?.length ?? 0) + (update.sp?.length ?? 0)) / 6,
+          ),
+          0,
+        ];
   switch (msg.t) {
     case "p":
     case "s":

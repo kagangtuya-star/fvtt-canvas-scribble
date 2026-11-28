@@ -156,7 +156,22 @@
       "Export": "导出预设 JSON",
       "ExportPrompt": "复制预设 JSON：",
       "Import": "导入预设 JSON",
-      "ImportPrompt": "粘贴预设 JSON："
+      "ImportPrompt": "粘贴预设 JSON：",
+      "Dynamics": "动力学",
+      "DynCustom": "自定义动力学",
+      "DynHint": "关闭时使用笔刷内置的压感响应。",
+      "DynUnsupported": "该笔刷没有可调的动态参数。",
+      "DynLo": "曲线为 0 时",
+      "DynHi": "曲线为 1 时",
+      "DynCombine": "合并方式",
+      "DynSensor": "传感器",
+      "DynMode": "模式",
+      "DynAdd": "添加传感器",
+      "DynRemove": "移除传感器",
+      "DynCurve": "响应曲线",
+      "DynCurveHint": "拖动控制点；单击空白处添加，双击或右键删除。",
+      "DynFreq": "频率",
+      "DynTry": "可在此试笔；双击恢复示例笔画。"
     },
     "Aids": {
       "Stabilizer": "防抖稳定器",
@@ -516,6 +531,49 @@
         "Rough": "纹理粗重：颗粒感和干笔肌理强。",
         "Xuan": "薄而极易吸水：墨沿纤维洇开。",
         "Canvas": "上过底的亚麻布纹：不吸水，适合水粉和油画。"
+      }
+    },
+    "Dyn": {
+      "Sensor": {
+        "P": "压感",
+        "T": "倾斜",
+        "V": "速度",
+        "D": "方向",
+        "R": "随机"
+      },
+      "Target": {
+        "Size": "尺寸",
+        "Flw": "流量",
+        "Hrd": "硬度",
+        "Ang": "角度",
+        "Asp": "扁平比",
+        "Sct": "散布",
+        "Spc": "间距"
+      },
+      "Combine": {
+        "Mul": "相乘",
+        "Min": "取小",
+        "Max": "取大",
+        "Add": "相加"
+      },
+      "Dir": {
+        "Abs": "绝对方向",
+        "Rel": "相对起笔",
+        "Axial": "相对笔尖"
+      },
+      "Rand": {
+        "Dab": "逐点",
+        "Stroke": "逐笔",
+        "Smooth": "平滑噪声"
+      },
+      "Curve": {
+        "Lin": "线性",
+        "Soft": "柔和",
+        "Firm": "偏硬",
+        "S": "S 形",
+        "Inv": "反转",
+        "Thr": "阈值",
+        "Custom": "自定义"
       }
     }
   }

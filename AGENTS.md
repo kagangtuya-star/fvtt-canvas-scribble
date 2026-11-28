@@ -32,6 +32,11 @@ Architecture, protocol and harness details: `docs/DEVELOPMENT.md`; version notes
 - Only the active GM writes Scene flags (`SceneWriter`, batched). Keep the per-scene budget/count checks.
 - Adding a brush or tool id touches: `core/types.ts` (ids), `brush/brushes.ts` (registry), `state/prefs.ts` (sizes),
   both language files, `tools/check-i18n.mjs`, and the gallery uses `BRUSH_IDS` automatically.
+- Brush dynamics (`brush/dynamics.ts`, `brush/curve.ts`): items without `style.brush.dyn` must keep the painters'
+  original code path (no visual change to existing marks). Adding a sensor, target, combine/direction/random mode or
+  curve preset touches `core/types.ts`, `TARGET_INFO` / `sanitizeDynamics`, the painter support list
+  (`dynamicsTargets`), both language files and `tools/check-i18n.mjs`. Per-point channels (`angles`, `tilt`,
+  `speed`) must stay parallel to `points` everywhere (recorder, simplification, codec, sanitize, live `p` deltas).
 - The harness (`dev/`) imitates Foundry; results there are "tested in harness", not "tested in Foundry". Keep
   `docs/COMPATIBILITY.md` honest when reporting status.
 - Never push, create repositories or releases, or publish to the Foundry package directory without explicit

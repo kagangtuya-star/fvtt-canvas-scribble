@@ -233,6 +233,102 @@ describe("live brush transport", () => {
     deliver();
     assert.equal(receiver.store.get(item.id)?.state, "temp");
   });
+
+  it("streams tilt and speed dynamics channels with live points and the final item", (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const gameStub = { users, user: users.get(GM), time: { serverTime: 1_000_000 } };
+    const oldGame = Object.getOwnPropertyDescriptor(globalThis, "game");
+    Object.defineProperty(globalThis, "game", { value: gameStub, configurable: true });
+    const wire = socket();
+    const receiver = new Session(wire);
+    receiver.scene = { id: SCENE } as FoundryScene;
+    t.after(() => {
+      receiver.destroy();
+      if (oldGame) Object.defineProperty(globalThis, "game", oldGame);
+      else Reflect.deleteProperty(globalThis, "game");
+    });
+    const sender = new Net(wire, users, BOB);
+    sender.scene = SCENE;
+    const live = new LiveSender(sender);
+    const dyn = {
+      size: { lo: 0.2, hi: 1, src: [{ s: "t" as const, c: "lin" }] },
+      flw: { lo: 0, hi: 1, src: [{ s: "v" as const, c: "inv" }] },
+    };
+    const prefs = { ...DEFAULT_PREFS, brushParams: { airbrush: { dyn } } };
+    const item = makeItem({ author: BOB, tool: "airbrush", style: { brush: { dyn } } });
+    let started = false;
+    let preview = item;
+    let committed: typeof item | null = null;
+    const host: ToolHost = {
+      prefs,
+      now: () => item.createdAt,
+      pressureMode: () => "auto",
+      makeItem: (_target, kind, tool, size, points) => ({ ...item, kind, tool, size, points }),
+      live(next) {
+        preview = next;
+        if (!started) live.start(next);
+        else live.push(next);
+        started = true;
+      },
+      commit: (next) => {
+        committed = next;
+        live.end(next, false);
+      },
+      cancel: (id) => live.cancel(id),
+    };
+    const space = new MapSpace(
+      { sceneX: 0, sceneY: 0, sceneWidth: 4000, sceneHeight: 3000, refW: 4000, refH: 3000, gridSize: 100 },
+      { zoom: () => 1, toCanvas: (x, y) => ({ x, y }), toClient: (x, y) => ({ x, y }) },
+    );
+    const sample = (x: number) => ({
+      cx: x,
+      cy: Math.sin(x / 30) * 20,
+      time: x / 2,
+      pressure: 0.6,
+      pointerType: "pen",
+      tiltX: Math.min(70, x / 4),
+      tiltY: 0,
+    });
+    const mods = { shift: false, alt: false };
+    const gesture = new FreehandGesture(
+      host,
+      { mode: "map", space },
+      { kind: "stroke", tool: "airbrush", size: 5 },
+      sample(0),
+    );
+    const deliver = () => {
+      while (wire.sent.length) wire.deliver(wire.sent.shift(), BOB);
+    };
+    gesture.move(
+      Array.from({ length: 20 }, (_, i) => sample((i + 1) * 10)),
+      mods,
+    );
+    t.mock.timers.tick(LIVE_BATCH_MS);
+    deliver();
+    gesture.move(
+      Array.from({ length: 20 }, (_, i) => sample(210 + i * 10)),
+      mods,
+    );
+    t.mock.timers.tick(LIVE_BATCH_MS);
+    deliver();
+    const got = receiver.store.get(item.id)!.item;
+    assert.equal(got.tilt?.length, got.points.length / 3);
+    assert.equal(got.speed?.length, got.points.length / 3);
+    assert.deepEqual(
+      got.tilt,
+      preview.tilt!.map((v) => Math.round(v * 255) / 255),
+      "delta-streamed tilt",
+    );
+    assert.ok(got.tilt!.at(-1)! > got.tilt![0]!);
+
+    gesture.up(sample(410), mods);
+    deliver();
+    const final = receiver.store.get(item.id)!;
+    assert.equal(final.state, "temp");
+    assert.equal(final.item.tilt?.length, final.item.points.length / 3);
+    assert.deepEqual(final.item.speed, committed!.speed);
+    assert.deepEqual(final.item.style.brush?.dyn, dyn);
+  });
 });
 
 /** In-memory socket: `deliver` simulates the server relaying a payload with its sender id. */

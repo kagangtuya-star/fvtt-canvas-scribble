@@ -67,13 +67,15 @@ tools/                 build, package, manifest and i18n checks
 `ScribbleItem` (`src/core/types.ts`) carries `schemaVersion`, `id`, `author`, `scene`, `mode` (`map` | `screen`),
 `kind` (`stroke` | `shape` | `area` | `text` | `laser`), `tool`, colour, opacity, size, flat `[x, y, z]` points, style
 flags, optional text, `createdAt` / `expiresAt` (server time; `expiresAt: null` = permanent) / `fadeDuration`, map
-`layer`, screen `anchor`, scene `level`, partial-eraser masks and a `revision`.
+`layer`, screen `anchor`, scene `level`, partial-eraser masks and a `revision`. Strokes may add per-point `angles`
+(nib angle) and the dynamics channels `tilt` and `speed` (0..1), each parallel to the points.
 
 - Map coordinates are scene-relative units against a reference scene size stored once per scene
   (`flags.canvas-scribble.ref`), so marks follow when the scene is resized.
 - Screen coordinates are relative to one of nine viewport anchors, with 1000 units = the shorter viewport side.
 - On the wire and in flags, points are quantised (0.1 unit; pressure 1/255; laser time 1 ms), delta + zig-zag + varint
-  encoded and base64'd (`src/core/codec.ts`), about 4 characters per point.
+  encoded and base64'd (`src/core/codec.ts`), about 4 characters per point. Angles and the `tilt` / `speed` channels
+  use 8 bits per point (≈ 1 byte); a channel whose length differs from the point count is dropped.
 - `sanitizeItem` validates every untrusted item (schema version, ids, scene, enums, colours, ranges, extents, clock skew,
   lifetime, text control characters, mask count) and always sets `author` from the authenticated sender.
 - Text keeps its original string (including explicit newlines). Optional `textWidth` is a wrapping width in space
@@ -92,7 +94,7 @@ Socket `module.canvas-scribble`, envelope `{ v, t, scene, … }` (`src/net/proto
 | `t`                       | Meaning                                                                                      |
 | ------------------------- | -------------------------------------------------------------------------------------------- |
 | `s`                       | live item starts                                                                             |
-| `p`                       | live points replacing the tail from index `from`                                             |
+| `p`                       | live points replacing the tail from index `from` (with `ang` / `tl` / `sp` channel tails)    |
 | `b`                       | up to 12 live `s`/`p` updates in one 33 ms batch; `s` can replace an existing live preview   |
 | `e`                       | final canonical item; `persist: true` asks the active GM to store it                         |
 | `x`                       | live item cancelled                                                                          |
@@ -141,6 +143,43 @@ validated by `assist/guides-model.ts`, debounced writes, newest 40 scenes).
   (renderer transient set) and committed once as a single undoable update (`u` or chunked `U`). Committed geometry
   uses the same validation locally and remotely; items the user may no longer modify or that would leave the scene
   extent are restored.
+
+## Brush dynamics
+
+Sensors mapped through response curves onto brush parameters (`brush/dynamics.ts`, `brush/curve.ts`; Brush Studio
+section in `ui/dynamics-editor.ts`). Code and data use short ids: sensors `p` pressure, `t` tilt, `v` speed,
+`d` direction, `r` random; targets `size`, `flw` flow, `hrd` hardness, `ang` angle, `asp` flatness, `sct` scatter,
+`spc` spacing.
+
+- **Recorded vs. derived.** The recorder stores raw, normalised sensor data only when the stroke's dynamics use it:
+  pressure in the points' z, pen tilt (`altitudeAngle`, else `tiltX`/`tiltY`) and drawing speed (from client positions
+  in CSS px/ms, smoothed over ≈ 30 ms, `1 − exp(−v / 1.2)`). Simplification keeps channels aligned and checks
+  sensor changes along the path both before and after the mapped curves. Direction comes from the stroke tangent at
+  render time (`abs`, `rel` to the first heading, `axial` = |sin(heading − nib)|). Random uses a counter hash of the
+  item id per dab and mapping (`dab`), one value per stroke (`stroke`), or simplex noise along the stroke (`smooth`).
+  Reading that sensor does not advance the painter's random number generator.
+- **Mapping.** `style.brush.dyn` holds per target `{ lo, hi, m?, src[] }`: each source's curve output is combined
+  (`mul`, `min`, `max`, `add`) into f ∈ [0, 1], then `value = base × lerp(lo, hi, f)`, or `base + lerp(lo, hi, f)`
+  degrees for `ang`. At most 4 sources per target. `sanitizeDynamics` validates and canonicalises every spec from
+  sockets, flags, preferences and imported presets.
+- **Curves.** Codes `lin`, `inv`, `s`, `pow:g`, `thr:t`, or `p:x,y;…` with 2–8 control points (0..255 integers,
+  increasing x) interpolated by a Fritsch–Carlson monotone cubic (no overshoot) and baked into a 1024-entry table.
+  Parametric curves evaluate analytically.
+- **Renderers.** The dab engine supports every target, per dab. Spacing scales the distance to the next dab, still
+  capped by `MAX_DABS_PER_ITEM`. Dynamic hardness is quantised to tenths, and dynamic flatness stretches the
+  base-aspect sprite, so the tip-sprite cache stays small. Splatter angles rotate the droplet cloud. Chisel nibs
+  support size, flatness and angle per footprint. Reflections reverse dynamic angle offsets. Ribbon brushes (ink,
+  pencil, soft, watercolour, neon) support size: they sample in stroke space independent of the view and pass the
+  width multiplier m to perfect-freehand as z = m / 2 with thinning 1, giving a diameter of exactly size × m.
+  Monoline and pixel brushes have no dynamics. `itemBounds` grows with the largest size / scatter multiplier.
+- **Compatibility.** Items without `dyn` use the original painter code, and an identical draw-call trace was checked
+  for every brush. `diffBrushOverride` drops a `dyn` equal to the brush's built-in response (`defaultDynamics`), so
+  default strokes stay small and look as before. A custom `dyn` with no mappings (`{}`) turns the built-in pressure
+  response off.
+- **Studio.** Turn on custom dynamics, pick a target, add sensors, and edit their curves: drag points, click to add,
+  double-click or right-click to remove. The preview doubles as a test pad: a stroke drawn there with the pen is
+  kept (per brush) and re-rendered as settings change, while a marker shows the current sensor value on the
+  selected curve. Wet-media (paint tool) brushes do not use these dynamics.
 
 ## Wet media (paint tool)
 

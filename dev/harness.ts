@@ -62,6 +62,8 @@ function buildPanel(me: { id: string; name: string }) {
 interface StrokeOptions {
   pointerType?: "mouse" | "pen" | "touch";
   pressure?: (t: number) => number;
+  /** Pen tilt `[tiltX, tiltY]` in degrees along the stroke (t = 0..1). */
+  tilt?: (t: number) => [number, number];
   shift?: boolean;
   alt?: boolean;
   /** ms between samples (event timestamps are synthetic but ordered). */
@@ -71,7 +73,7 @@ interface StrokeOptions {
   hold?: boolean;
 }
 
-function fire(type: string, x: number, y: number, o: StrokeOptions, pressure: number) {
+function fire(type: string, x: number, y: number, o: StrokeOptions, pressure: number, tilt: [number, number] = [0, 0]) {
   const board = document.getElementById("board")!;
   const ev = new PointerEvent(type, {
     bubbles: true,
@@ -82,6 +84,8 @@ function fire(type: string, x: number, y: number, o: StrokeOptions, pressure: nu
     pointerId: o.pointerType === "touch" ? 11 : o.pointerType === "pen" ? 7 : 1,
     pointerType: o.pointerType ?? "mouse",
     pressure,
+    tiltX: tilt[0],
+    tiltY: tilt[1],
     button: type === "pointermove" ? -1 : (o.button ?? 0),
     buttons: type === "pointerup" ? 0 : 1,
     shiftKey: !!o.shift,
@@ -94,9 +98,10 @@ function fire(type: string, x: number, y: number, o: StrokeOptions, pressure: nu
 async function stroke(points: [number, number][], o: StrokeOptions = {}) {
   const n = points.length;
   const p = (i: number) => (o.pressure ? o.pressure(i / Math.max(1, n - 1)) : o.pointerType === "pen" ? 0.6 : 0.5);
-  fire("pointerdown", points[0]![0], points[0]![1], o, p(0));
+  const tl = (i: number): [number, number] => o.tilt?.(i / Math.max(1, n - 1)) ?? [0, 0];
+  fire("pointerdown", points[0]![0], points[0]![1], o, p(0), tl(0));
   for (let i = 1; i < n; i++) {
-    fire("pointermove", points[i]![0], points[i]![1], o, p(i));
+    fire("pointermove", points[i]![0], points[i]![1], o, p(i), tl(i));
     if (o.dt) await new Promise((r) => setTimeout(r, o.dt));
   }
   if (!o.hold) fire("pointerup", points[n - 1]![0], points[n - 1]![1], o, 0);

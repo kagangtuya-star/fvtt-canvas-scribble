@@ -156,7 +156,22 @@
       "Export": "Export presets JSON",
       "ExportPrompt": "Copy presets JSON:",
       "Import": "Import presets JSON",
-      "ImportPrompt": "Paste presets JSON:"
+      "ImportPrompt": "Paste presets JSON:",
+      "Dynamics": "Dynamics",
+      "DynCustom": "Custom dynamics",
+      "DynHint": "Off: the brush's built-in pressure response.",
+      "DynUnsupported": "This brush has no dynamic parameters.",
+      "DynLo": "Output at 0",
+      "DynHi": "Output at 1",
+      "DynCombine": "Combine",
+      "DynSensor": "Sensor",
+      "DynMode": "Mode",
+      "DynAdd": "Add sensor",
+      "DynRemove": "Remove sensor",
+      "DynCurve": "Response curve",
+      "DynCurveHint": "Drag points; click empty space to add, double-click or right-click to remove.",
+      "DynFreq": "Frequency",
+      "DynTry": "Draw here to test the brush; double-click restores the sample stroke."
     },
     "Aids": {
       "Stabilizer": "Stabilizer",
@@ -516,6 +531,49 @@
         "Rough": "Heavy tooth: strong granulation and dry-brush texture.",
         "Xuan": "Thin, very absorbent rice paper: ink bleeds along the fibres.",
         "Canvas": "Primed canvas weave: no absorption, for gouache and oil."
+      }
+    },
+    "Dyn": {
+      "Sensor": {
+        "P": "Pressure",
+        "T": "Tilt",
+        "V": "Speed",
+        "D": "Direction",
+        "R": "Random"
+      },
+      "Target": {
+        "Size": "Size",
+        "Flw": "Flow",
+        "Hrd": "Hardness",
+        "Ang": "Angle",
+        "Asp": "Flatness",
+        "Sct": "Scatter",
+        "Spc": "Spacing"
+      },
+      "Combine": {
+        "Mul": "Multiply",
+        "Min": "Minimum",
+        "Max": "Maximum",
+        "Add": "Add"
+      },
+      "Dir": {
+        "Abs": "Absolute",
+        "Rel": "Relative to start",
+        "Axial": "Across the nib"
+      },
+      "Rand": {
+        "Dab": "Per dab",
+        "Stroke": "Per stroke",
+        "Smooth": "Smooth noise"
+      },
+      "Curve": {
+        "Lin": "Linear",
+        "Soft": "Soft",
+        "Firm": "Firm",
+        "S": "S-curve",
+        "Inv": "Inverted",
+        "Thr": "Threshold",
+        "Custom": "Custom"
       }
     }
   }

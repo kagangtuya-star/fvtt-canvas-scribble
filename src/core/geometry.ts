@@ -34,6 +34,12 @@ export const unionBounds = (a: Bounds, b: Bounds): Bounds => [
 export const boundsIntersect = (a: Bounds, b: Bounds): boolean =>
   a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
 
+export interface SimplifyChannel {
+  values: readonly number[];
+  /** Response curves that can amplify small deviations in this channel. */
+  curves?: readonly ((value: number) => number)[];
+}
+
 /**
  * Ramer–Douglas–Peucker simplification that also preserves pressure changes:
  * a point is kept when either its distance from the chord or its pressure
@@ -46,6 +52,8 @@ function simplifyIndices(
   pressureTolerance: number,
   angles?: readonly number[],
   angleTolerance = Math.PI / 36,
+  channels?: readonly SimplifyChannel[],
+  channelTolerance = 0.08,
 ): number[] {
   const n = flat.length / 3;
   if (n <= 2 || tolerance <= 0) return Array.from({ length: n }, (_, i) => i);
@@ -86,6 +94,19 @@ function simplifyIndices(
         const aDev = Math.abs(angles[i]! - (startAngle + angleDelta * (len2 > 0 ? t : frac)));
         score = Math.max(score, aDev / angleTolerance);
       }
+      if (channels) {
+        // A retained segment interpolates the sensor over distance, not sample count.
+        const along = len2 > 0 ? t : frac;
+        for (const { values, curves } of channels) {
+          const actual = values[i]!;
+          const estimate = values[first]! + (values[last]! - values[first]!) * along;
+          let deviation = Math.abs(actual - estimate);
+          if (deviation > 0 && curves) {
+            for (const curve of curves) deviation = Math.max(deviation, Math.abs(curve(actual) - curve(estimate)));
+          }
+          score = Math.max(score, deviation / channelTolerance);
+        }
+      }
       if (score > worstScore) {
         worstScore = score;
         worst = i;
@@ -118,20 +139,25 @@ export function simplifyToLimit(flat: readonly number[], tolerance: number, maxP
   return pickPoints(flat, simplifyIndicesToLimit(flat, tolerance, maxPoints));
 }
 
-/** Original indices of the retained points, optionally preserving changing nib angles. */
+/**
+ * Original indices of the retained points, optionally preserving changing nib
+ * angles and per-point dynamics channels (pressure, tilt, speed; 0..1).
+ */
 export function simplifyIndicesToLimit(
   flat: readonly number[],
   tolerance: number,
   maxPoints: number,
   angles?: readonly number[],
+  channels?: readonly SimplifyChannel[],
 ): number[] {
+  const chs = channels?.length ? channels : undefined;
   const unwrapped = angles?.map((a, i) => (i === 0 ? a : shortestAngle(a - angles[i - 1]!)));
   if (unwrapped) for (let i = 1; i < unwrapped.length; i++) unwrapped[i] = unwrapped[i - 1]! + unwrapped[i]!;
-  let out = simplifyIndices(flat, tolerance, 0.06, unwrapped);
+  let out = simplifyIndices(flat, tolerance, 0.06, unwrapped, Math.PI / 36, chs);
   let tol = tolerance;
   for (let i = 0; i < 12 && out.length > maxPoints; i++) {
     tol *= 1.8;
-    out = simplifyIndices(flat, tol, 0.06 * (1 + i), unwrapped, (Math.PI / 36) * (1 + i));
+    out = simplifyIndices(flat, tol, 0.06 * (1 + i), unwrapped, (Math.PI / 36) * (1 + i), chs, 0.08 * (1 + i));
   }
   if (out.length > maxPoints) {
     // Last resort: uniform decimation, keeping both ends.

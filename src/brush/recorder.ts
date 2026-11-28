@@ -1,8 +1,12 @@
 import { LIMITS } from "../constants.ts";
-import { quantizeAngles, quantizePoints } from "../core/codec.ts";
+import { quantizeAngles, quantizePoints, quantizeUnits } from "../core/codec.ts";
 import { simplifyIndicesToLimit, simplifyToLimit } from "../core/geometry.ts";
+import type { SimplifyChannel } from "../core/geometry.ts";
+import { DYN_TARGETS } from "../core/types.ts";
+import type { DynamicsSpec } from "../core/types.ts";
 import { LineConstraint } from "../assist/constraint.ts";
 import type { StrokeConstraint } from "../assist/constraint.ts";
+import { compileCurve } from "./curve.ts";
 import { StrokeStabilizer } from "./stabilizer.ts";
 import type { StabilizerMode } from "./stabilizer.ts";
 
@@ -20,6 +24,11 @@ import type { StabilizerMode } from "./stabilizer.ts";
  * to smoothed stroke-direction simulation so tilt/twist brushes remain
  * expressive even without a drawing tablet.
  *
+ * Dynamics channels: when a brush's dynamics use them, pen tilt (0 upright …
+ * 1 flat) and drawing speed (0..1, measured on the raw samples in CSS pixels
+ * per millisecond, so zoom does not change the feel) are stored per point,
+ * parallel to the points, and kept aligned through simplification.
+ *
  * Pipeline per sample: dejitter (One Euro) → stabilizer (lazy / average) →
  * streamline → ruler constraint → stored point. Everything happens here so
  * renderers draw stored points deterministically without lag. On pen up the
@@ -32,6 +41,8 @@ export interface InputSample {
   /** Position in space units. */
   x: number;
   y: number;
+  /** Original CSS position for speed, independent of the transform into stroke space. */
+  client?: { x: number; y: number };
   /** Event time (ms, `PointerEvent.timeStamp`). */
   time: number;
   pressure: number;
@@ -40,6 +51,8 @@ export interface InputSample {
   tiltY?: number;
   /** Stylus barrel rotation in degrees (0..359) from `PointerEvent.twist`. */
   twist?: number;
+  /** Pen altitude in radians (π/2 = upright) from `PointerEvent.altitudeAngle`, when available. */
+  altitudeAngle?: number;
 }
 
 /** True when the sample carries real pressure (pens; not the 0.5 default of mice). */
@@ -49,6 +62,62 @@ export const hasRealPressure = (s: Pick<InputSample, "pointerType" | "pressure">
 /** Tilt magnitude 0 (upright) … 1 (flat). */
 export const tiltAmount = (s: Pick<InputSample, "tiltX" | "tiltY">): number =>
   Math.min(1, Math.hypot(s.tiltX ?? 0, s.tiltY ?? 0) / 75);
+
+/** Tilt sensor 0 (upright) … 1 (flat): pen altitude when reported, otherwise tiltX/tiltY; 0 for mice and touch. */
+export function tiltOf(s: Pick<InputSample, "pointerType" | "tiltX" | "tiltY" | "altitudeAngle">): number {
+  if (s.pointerType !== "pen") return 0;
+  const alt = s.altitudeAngle;
+  if (typeof alt === "number" && Number.isFinite(alt) && alt >= 0 && alt <= Math.PI / 2)
+    return Math.min(1, Math.max(0, 1 - alt / (Math.PI / 2)));
+  return tiltAmount(s);
+}
+
+/** Speed (CSS px/ms) that maps to ≈ 0.63; normalised speed is `1 − exp(−v / SPEED_REF)`. */
+export const SPEED_REF = 1.2;
+/** Time constant of the speed smoothing (ms). */
+const SPEED_SMOOTH_MS = 30;
+
+/** Smoothed, normalised drawing speed 0..1 from pointer positions in CSS pixels. */
+export class SpeedModel {
+  readonly #unitsPerPx: number;
+  #last: InputSample | null = null;
+  #v = 0;
+
+  constructor(unitsPerPx: number) {
+    this.#unitsPerPx = Math.max(1e-6, unitsPerPx);
+  }
+
+  get value(): number {
+    return 1 - Math.exp(-this.#v / SPEED_REF);
+  }
+
+  next(s: InputSample): number {
+    const prev = this.#last;
+    if (!prev) {
+      this.#last = s;
+      return this.value;
+    }
+    const dt = s.time - prev.time;
+    // Samples sharing a timestamp: keep the older reference so the distance accumulates.
+    if (!(dt > 0)) return this.value;
+    this.#last = s;
+    const distance =
+      s.client && prev.client
+        ? Math.hypot(s.client.x - prev.client.x, s.client.y - prev.client.y)
+        : Math.hypot(s.x - prev.x, s.y - prev.y) / this.#unitsPerPx;
+    const instant = distance / dt;
+    const a = 1 - Math.exp(-Math.min(dt, 250) / SPEED_SMOOTH_MS);
+    this.#v += (instant - this.#v) * a;
+    return this.value;
+  }
+
+  copy(): SpeedModel {
+    const out = new SpeedModel(this.#unitsPerPx);
+    out.#last = this.#last;
+    out.#v = this.#v;
+    return out;
+  }
+}
 
 /** Extract real pen nib angle (radians) from twist or tilt azimuth, or `null` if unavailable. */
 export function realPenAngle(s: Pick<InputSample, "pointerType" | "tiltX" | "tiltY" | "twist">): number | null {
@@ -116,6 +185,12 @@ export interface RecorderOptions {
   usesTilt: boolean;
   /** Record parallel per-point nib angles (from pen twist/tilt or mouse simulation)? */
   recordAngles?: boolean;
+  /** Record the per-point tilt channel (tilt dynamics)? */
+  recordTilt?: boolean;
+  /** Record the per-point speed channel (speed dynamics)? */
+  recordSpeed?: boolean;
+  /** Custom mappings whose sensor responses should survive point simplification. */
+  dynamics?: DynamicsSpec;
   /** Stabilizer algorithm (default "off"). */
   stabilizerMode?: StabilizerMode;
   /** Stabilizer strength 0..1 (default 0). */
@@ -134,12 +209,43 @@ export interface RecorderOptions {
   tolerance: number;
 }
 
+function simplificationChannels(
+  points: readonly number[],
+  { tilt, speed }: { tilt?: number[]; speed?: number[] },
+  dynamics?: DynamicsSpec,
+): SimplifyChannel[] {
+  const codes = { p: new Set<string>(), t: new Set<string>(), v: new Set<string>() };
+  if (dynamics) {
+    for (const key of DYN_TARGETS) {
+      const target = dynamics[key];
+      if (!target || target.lo === target.hi) continue;
+      for (const { s, c } of target.src) if (s === "p" || s === "t" || s === "v") codes[s].add(c);
+    }
+  }
+  const channels: SimplifyChannel[] = [];
+  const add = (values: readonly number[], curves: Set<string>) =>
+    channels.push({ values, curves: [...curves].filter((c) => c !== "lin").map(compileCurve) });
+  if (codes.p.size)
+    add(
+      points.filter((_, i) => i % 3 === 2),
+      codes.p,
+    );
+  if (tilt) add(tilt, codes.t);
+  if (speed) add(speed, codes.v);
+  return channels;
+}
+
 export class StrokeRecorder {
   readonly #o: RecorderOptions;
   readonly #pressure: PressureModel;
   readonly #stabilizer: StrokeStabilizer;
+  #speedModel: SpeedModel;
   #points: number[] = [];
   #angles: number[] = [];
+  #tilt: number[] = [];
+  #speed: number[] = [];
+  #lastT = 0;
+  #lastV = 0;
   #hasPenAngles = false;
   #lastAng = 0;
   #sx = 0;
@@ -160,6 +266,13 @@ export class StrokeRecorder {
       dejitter: o.dejitter ?? 0,
       unitsPerPx: o.unitsPerPx ?? 1,
     });
+    this.#speedModel = new SpeedModel(o.unitsPerPx ?? 1);
+  }
+
+  /** Append the current dynamics channel values for a new stored point. */
+  #pushChannels(): void {
+    if (this.#o.recordTilt) this.#tilt.push(this.#lastT);
+    if (this.#o.recordSpeed) this.#speed.push(this.#lastV);
   }
 
   /** Project through the ruler constraint; re-projects earlier points when the constraint locks. */
@@ -220,6 +333,8 @@ export class StrokeRecorder {
     if (this.#o.usesTilt && this.#o.usesPressure) p = Math.min(1, p * (1 + 0.7 * tiltAmount(s)));
     this.#lastP = p;
     this.#raw = s;
+    if (this.#o.recordTilt) this.#lastT = tiltOf(s);
+    if (this.#o.recordSpeed) this.#lastV = this.#speedModel.next(s);
 
     const penAng = this.#o.recordAngles ? realPenAngle(s) : null;
     if (penAng !== null) {
@@ -236,6 +351,7 @@ export class StrokeRecorder {
       const q = this.#project(filtered.x, filtered.y);
       this.#points.push(q.x, q.y, p);
       if (this.#o.recordAngles) this.#angles.push(this.#lastAng);
+      this.#pushChannels();
       return;
     }
     const t = 0.15 + (1 - this.#o.streamline) * 0.85;
@@ -247,6 +363,8 @@ export class StrokeRecorder {
     const dy = q.y - this.#points[n - 2]!;
     if (Math.hypot(dx, dy) < this.#o.minDistance) {
       this.#points[n - 1] = Math.max(this.#points[n - 1]!, p * 0.5 + this.#points[n - 1]! * 0.5);
+      if (this.#o.recordTilt) this.#tilt[this.#tilt.length - 1] = this.#lastT;
+      if (this.#o.recordSpeed) this.#speed[this.#speed.length - 1] = this.#lastV;
       return;
     }
     // Mouse fallback for dynamic angle brushes: smoothly follow movement heading when no real pen angle exists.
@@ -258,6 +376,7 @@ export class StrokeRecorder {
     }
     this.#points.push(q.x, q.y, p);
     if (this.#o.recordAngles) this.#angles.push(this.#lastAng);
+    this.#pushChannels();
   }
 
   /** Pin the lift-off point, optionally bridging the gap from the lagging brush. */
@@ -272,6 +391,7 @@ export class StrokeRecorder {
       if (n >= 3 && Math.hypot(q.x - this.#points[n - 3]!, q.y - this.#points[n - 2]!) <= minDistance) return;
       this.#points.push(q.x, q.y, this.#lastP);
       if (this.#o.recordAngles) this.#angles.push(this.#lastAng);
+      this.#pushChannels();
     };
     if (catchUp) for (const p of this.#stabilizer.catchUp().slice(0, -1)) append(p.x, p.y, this.#o.minDistance);
     append(raw.x, raw.y, 0);
@@ -299,6 +419,27 @@ export class StrokeRecorder {
     const ang = this.#angles.slice(0, ptsCount);
     while (ang.length < ptsCount) ang.push(this.#lastAng);
     return ang;
+  }
+
+  /** Preview dynamics channels matching `preview()` (absent when not recorded). */
+  previewChannels(count = this.preview().length / 3): { tilt?: number[]; speed?: number[] } {
+    const fit = (src: number[], last: number): number[] => {
+      if (this.line) return new Array<number>(count).fill(last);
+      const out = src.slice(0, count);
+      while (out.length < count) out.push(last);
+      return out;
+    };
+    const out: { tilt?: number[]; speed?: number[] } = {};
+    if (this.#o.recordTilt) out.tilt = fit(this.#tilt, this.#lastT);
+    if (this.#o.recordSpeed) out.speed = fit(this.#speed, this.#lastV);
+    return out;
+  }
+
+  /** Live item data: preview points plus any recorded angles and dynamics channels. */
+  previewData(): { points: number[]; angles?: number[]; tilt?: number[]; speed?: number[] } {
+    const points = this.preview();
+    const angles = this.previewAngles();
+    return { points, ...(angles ? { angles } : {}), ...this.previewChannels(points.length / 3) };
   }
 
   #linePoints(): number[] {
@@ -331,21 +472,42 @@ export class StrokeRecorder {
     return smoothPolyline(pts, this.#o.smoothing ?? 0);
   }
 
-  /** Storage-ready points + aligned quantised per-point pen angles (when recorded). */
-  finishWithAngles(): { points: number[]; angles?: number[] } {
+  /** Storage-ready points + aligned quantised per-point pen angles and dynamics channels (when recorded). */
+  finishWithAngles(): { points: number[]; angles?: number[]; tilt?: number[]; speed?: number[] } {
     const rawPts = this.#smoothed(this.preview());
     const rawAng = this.previewAngles();
+    const ch = this.previewChannels(rawPts.length / 3);
+    const units = (v: number[] | undefined, pick: (a: number[]) => number[]) =>
+      v ? quantizeUnits(pick(v)) : undefined;
+    const withChannels = (
+      base: { points: number[]; angles?: number[] },
+      pick: (a: number[]) => number[],
+    ): { points: number[]; angles?: number[]; tilt?: number[]; speed?: number[] } => {
+      const tilt = units(ch.tilt, pick);
+      const speed = units(ch.speed, pick);
+      return { ...base, ...(tilt ? { tilt } : {}), ...(speed ? { speed } : {}) };
+    };
     if (this.line) {
       const points = quantizePoints(rawPts);
-      if (!rawAng) return { points };
-      return { points, angles: quantizeAngles(new Array<number>(points.length / 3).fill(this.#lastAng)) };
+      const same = (a: number[]) => a;
+      if (!rawAng) return withChannels({ points }, same);
+      return withChannels(
+        { points, angles: quantizeAngles(new Array<number>(points.length / 3).fill(this.#lastAng)) },
+        same,
+      );
     }
-    if (!rawAng) return { points: quantizePoints(simplifyToLimit(rawPts, this.#o.tolerance, LIMITS.maxPointsPerItem)) };
-    const kept = simplifyIndicesToLimit(rawPts, this.#o.tolerance, LIMITS.maxPointsPerItem, rawAng);
-    return {
-      points: quantizePoints(kept.flatMap((i) => rawPts.slice(i * 3, i * 3 + 3))),
-      angles: quantizeAngles(kept.map((i) => rawAng[i]!)),
-    };
+    if (!rawAng && !ch.tilt && !ch.speed && !this.#o.dynamics)
+      return { points: quantizePoints(simplifyToLimit(rawPts, this.#o.tolerance, LIMITS.maxPointsPerItem)) };
+    const channels = simplificationChannels(rawPts, ch, this.#o.dynamics);
+    const kept = simplifyIndicesToLimit(rawPts, this.#o.tolerance, LIMITS.maxPointsPerItem, rawAng, channels);
+    const pick = (a: number[]) => kept.map((i) => a[i]!);
+    return withChannels(
+      {
+        points: quantizePoints(kept.flatMap((i) => rawPts.slice(i * 3, i * 3 + 3))),
+        ...(rawAng ? { angles: quantizeAngles(pick(rawAng)) } : {}),
+      },
+      pick,
+    );
   }
 
   /**
@@ -354,6 +516,8 @@ export class StrokeRecorder {
    */
   chain(): StrokeRecorder {
     const next = new StrokeRecorder(this.#o);
+    // Speed continues across the junction instead of restarting from rest.
+    next.#speedModel = this.#speedModel.copy();
     const tip = this.#raw;
     if (tip) next.add({ ...tip });
     return next;
