@@ -23,7 +23,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createRequire, stripTypeScriptTypes } from "node:module";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { configureManifest } from "./release.mjs";
 
@@ -31,11 +31,23 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SRC = join(ROOT, "src");
 const DIST = join(ROOT, "dist");
 const OUT_SCRIPTS = join(DIST, "scripts");
-const VENDOR_DIR = join(OUT_SCRIPTS, "vendor", "perfect-freehand");
+const VENDOR_ROOT = join(OUT_SCRIPTS, "vendor");
 const args = new Set(process.argv.slice(2));
 
 /** Static files copied into the package root. */
 const STATIC = ["lang", "styles", "LICENSE", "README.md", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md"];
+
+/**
+ * Runtime ESM dependencies vendored into `dist/scripts/vendor/<pkg>/`.
+ * Each entry maps an import specifier used in `src/` to an npm package and
+ * optional explicit single-file ESM entry.
+ */
+const VENDORS = [
+  { spec: "perfect-freehand", pkg: "perfect-freehand", dir: "perfect-freehand" },
+  { spec: "simplex-noise", pkg: "simplex-noise", dir: "simplex-noise" },
+  { spec: "lazy-brush", pkg: "lazy-brush", dir: "lazy-brush" },
+  { spec: "roughjs/bundled/rough.esm.js", pkg: "roughjs", dir: "roughjs", explicitEntry: "bundled/rough.esm.js" },
+];
 
 const log = (...m) => console.log("[build]", ...m);
 
@@ -49,17 +61,20 @@ function walk(dir, filter) {
   return out;
 }
 
-/** Locate perfect-freehand's ESM entry through Node resolution (honours package "exports"). */
-function resolvePerfectFreehand() {
-  // Search the node_modules lookup paths directly: the package's "exports" map
-  // does not expose ./package.json, so require.resolve() cannot be used for it.
+/** Locate a package's ESM entry through Node resolution (honours package "exports"). */
+function resolveVendor(v) {
   const req = createRequire(join(ROOT, "package.json"));
-  const pkgJsonPath = (req.resolve.paths("perfect-freehand") ?? [])
-    .map((dir) => join(dir, "perfect-freehand", "package.json"))
+  const pkgJsonPath = (req.resolve.paths(v.pkg) ?? [])
+    .map((dir) => join(dir, v.pkg, "package.json"))
     .find((p) => existsSync(p));
-  if (!pkgJsonPath) throw new Error("perfect-freehand is not installed. Run `npm install` (see README → Development).");
+  if (!pkgJsonPath) throw new Error(`${v.pkg} is not installed. Run \`npm install\` (see README → Development).`);
   const pkgDir = dirname(pkgJsonPath);
   const pkg = JSON.parse(readFileSync(pkgJsonPath, "utf8"));
+  if (v.explicitEntry) {
+    const file = join(pkgDir, v.explicitEntry);
+    if (existsSync(file)) return { pkgDir, entry: file, version: pkg.version, singleFile: true };
+    throw new Error(`Missing ${v.explicitEntry} in ${v.pkg}@${pkg.version}`);
+  }
   const exp = pkg.exports?.["."] ?? pkg.exports;
   const candidates = [
     typeof exp === "string" ? exp : null,
@@ -70,37 +85,49 @@ function resolvePerfectFreehand() {
   ].filter((c) => typeof c === "string");
   for (const c of candidates) {
     const file = join(pkgDir, c);
-    if (existsSync(file)) return { pkgDir, entry: file, version: pkg.version };
+    if (existsSync(file)) return { pkgDir, entry: file, version: pkg.version, singleFile: false };
   }
-  throw new Error(`Could not find an ES module entry in perfect-freehand@${pkg.version}`);
+  throw new Error(`Could not find an ES module entry in ${v.pkg}@${pkg.version}`);
 }
 
-function vendorPerfectFreehand(vendorDir = VENDOR_DIR) {
-  const { pkgDir, entry, version } = resolvePerfectFreehand();
-  const entryDir = dirname(entry);
-  mkdirSync(vendorDir, { recursive: true });
-  // Copy the whole directory of the entry so internal relative imports keep working.
-  for (const file of walk(entryDir, (p) => /\.(m?js)$/.test(p) && !/\.map$/.test(p))) {
-    const target = join(vendorDir, relative(entryDir, file));
-    mkdirSync(dirname(target), { recursive: true });
-    cpSync(file, target);
+function vendorAll(vendorRoot = VENDOR_ROOT) {
+  const entries = new Map();
+  for (const v of VENDORS) {
+    const { pkgDir, entry, version, singleFile } = resolveVendor(v);
+    const vendorDir = join(vendorRoot, v.dir);
+    mkdirSync(vendorDir, { recursive: true });
+    let outEntry;
+    if (singleFile) {
+      outEntry = join(vendorDir, basename(entry));
+      cpSync(entry, outEntry);
+    } else {
+      const entryDir = dirname(entry);
+      for (const file of walk(entryDir, (p) => /\.(m?js)$/.test(p) && !/\.map$/.test(p))) {
+        const target = join(vendorDir, relative(entryDir, file));
+        mkdirSync(dirname(target), { recursive: true });
+        cpSync(file, target);
+      }
+      outEntry = join(vendorDir, relative(entryDir, entry));
+    }
+    for (const lic of ["LICENSE", "LICENSE.md", "license"]) {
+      if (existsSync(join(pkgDir, lic))) cpSync(join(pkgDir, lic), join(vendorDir, "LICENSE"));
+    }
+    if (!existsSync(join(vendorDir, "LICENSE"))) {
+      throw new Error(`${v.pkg} LICENSE not found; refusing to ship it without its license text.`);
+    }
+    log(`vendored ${v.pkg}@${version}`);
+    entries.set(v.spec, outEntry);
   }
-  for (const lic of ["LICENSE", "LICENSE.md", "license"]) {
-    if (existsSync(join(pkgDir, lic))) cpSync(join(pkgDir, lic), join(vendorDir, "LICENSE"));
-  }
-  if (!existsSync(join(vendorDir, "LICENSE"))) {
-    throw new Error("perfect-freehand LICENSE not found; refusing to ship it without its license text.");
-  }
-  log(`vendored perfect-freehand@${version}`);
-  return join(vendorDir, relative(entryDir, entry));
+  return entries;
 }
 
 const SPECIFIER_RE = /(\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\bexport\s*\*\s*from\s*)(["'])([^"'\n]+)\2/g;
 
-function rewriteSpecifiers(code, outFile, vendorEntry) {
+function rewriteSpecifiers(code, outFile, vendorEntries) {
   return code.replace(SPECIFIER_RE, (all, lead, q, spec) => {
-    if (spec === "perfect-freehand") {
-      let rel = relative(dirname(outFile), vendorEntry).split(sep).join("/");
+    const vendored = vendorEntries.get(spec);
+    if (vendored) {
+      let rel = relative(dirname(outFile), vendored).split(sep).join("/");
       if (!rel.startsWith(".")) rel = `./${rel}`;
       return `${lead}${q}${rel}${q}`;
     }
@@ -110,7 +137,7 @@ function rewriteSpecifiers(code, outFile, vendorEntry) {
   });
 }
 
-function compileTree(srcDir, outDir, vendorEntry) {
+function compileTree(srcDir, outDir, vendorEntries) {
   const files = walk(srcDir, (p) => p.endsWith(".ts") && !p.endsWith(".d.ts"));
   for (const file of files) {
     const rel = relative(srcDir, file);
@@ -123,7 +150,7 @@ function compileTree(srcDir, outDir, vendorEntry) {
       throw new Error(`Type stripping failed for ${rel}: ${err.message}`);
     }
     mkdirSync(dirname(outFile), { recursive: true });
-    writeFileSync(outFile, rewriteSpecifiers(js, outFile, vendorEntry));
+    writeFileSync(outFile, rewriteSpecifiers(js, outFile, vendorEntries));
   }
   return files.length;
 }
@@ -140,11 +167,11 @@ function buildManifest() {
 function build() {
   const started = Date.now();
   const manifest = buildManifest();
-  resolvePerfectFreehand(); // fail before touching dist/
+  for (const v of VENDORS) resolveVendor(v); // fail before touching dist/
   rmSync(DIST, { recursive: true, force: true });
   mkdirSync(OUT_SCRIPTS, { recursive: true });
-  const vendorEntry = vendorPerfectFreehand();
-  const count = compileTree(SRC, OUT_SCRIPTS, vendorEntry);
+  const vendorEntries = vendorAll();
+  const count = compileTree(SRC, OUT_SCRIPTS, vendorEntries);
   for (const item of STATIC) {
     const from = join(ROOT, item);
     if (!existsSync(from)) throw new Error(`Missing static file: ${item}`);
@@ -159,9 +186,9 @@ function build() {
     const outDev = join(ROOT, "dist-dev");
     rmSync(outDev, { recursive: true, force: true });
     mkdirSync(outDev, { recursive: true });
-    const devVendor = vendorPerfectFreehand(join(outDev, "vendor", "perfect-freehand"));
-    compileTree(SRC, join(outDev, "src"), devVendor);
-    compileTree(join(ROOT, "dev"), join(outDev, "dev"), devVendor);
+    const devVendors = vendorAll(join(outDev, "vendor"));
+    compileTree(SRC, join(outDev, "src"), devVendors);
+    compileTree(join(ROOT, "dev"), join(outDev, "dev"), devVendors);
     for (const page of readdirSync(join(ROOT, "dev")).filter((f) => f.endsWith(".html"))) {
       cpSync(join(ROOT, "dev", page), join(outDev, page));
     }

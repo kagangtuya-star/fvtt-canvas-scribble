@@ -2,8 +2,9 @@
 // key referenced by the source exists. Run: node tools/check-i18n.mjs
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const PREFIX = "CANVAS_SCRIBBLE";
 const LANGS = ["en.json", "zh-CN.json"];
 

@@ -54,10 +54,12 @@ describe("release build and packaging", () => {
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "canvas-scribble-release-"));
     cpSync(join(ROOT, "tools"), join(root, "tools"), { recursive: true });
-    // Use the installed runtime dependency; no network or dependency installation.
-    cpSync(join(ROOT, "node_modules/perfect-freehand"), join(root, "node_modules/perfect-freehand"), {
-      recursive: true,
-    });
+    // Use the installed runtime dependencies; no network or dependency installation.
+    for (const dep of ["perfect-freehand", "simplex-noise", "lazy-brush", "roughjs"]) {
+      cpSync(join(ROOT, "node_modules", dep), join(root, "node_modules", dep), {
+        recursive: true,
+      });
+    }
     mkdirSync(join(root, "src"));
     writeFileSync(join(root, "src/main.ts"), "export const ready: boolean = true;\n");
     writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module", version: "1.0.0" }));
