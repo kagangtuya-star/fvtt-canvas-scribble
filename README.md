@@ -22,6 +22,7 @@ Freehand drawing, annotations, and a laser pointer for Foundry VTT (v13–v14). 
 - **Laser** — Glowing trail behind the pointer. Ephemeral and excluded from undo history.
 - **Text** — Click and type; `Enter` adds a line, `Ctrl/Cmd+Enter` or clicking outside commits, and `Esc` cancels. Text grows to fit by default. Double-click with Select (or click with Text) to edit again. Drag the text to move it, side handles to set a wrapping width, or corner handles to scale the font; use “Restore automatic text width” to remove wrapping.
 - **Eraser** — Whole-mark or partial (masked) erasing.
+- **Paint** (wet media, map only) — Watercolour, wash, ink, gouache, oil, clear water, blender and sponge brushes on a choice of papers (cold press, hot press, rough, xuan, canvas). The paint is simulated rather than drawn: pigments mix subtractively, a loaded brush drags and blends wet colour, watercolour spreads along the paper fibres and darkens at its edges, granulating pigment settles into the paper's tooth, ink builds up layer by layer, and paint stays workable until it dries (oil much longer than water). Pigment and water amounts are set per stroke; *Dry now* dries everything at once.
 
 Strokes stream live to other players (~33 ms batches, with optional name tags), and late joiners receive any active temporary marks. Lifetimes and fades run on Foundry's server clock so marks disappear at the same moment for everyone. Each user has their own undo/redo stack and a scoped clear menu (clearing others' marks or permanent annotations always asks for confirmation). Mouse, touch, and stylus are all supported, with hardware pressure/tilt, palm rejection, and velocity-based simulation when no pen is present.
 
@@ -55,10 +56,13 @@ GMs set the minimum role for each action in World Settings (GMs can always do ev
 | Map drawing (incl. laser) | Player |
 | Permanent annotations | Trusted Player |
 | Erase / clear others' marks | Assistant GM |
+| Wet-media paint | Trusted Player |
 
 Permissions are re-checked on every receiving client against the sender ID attached by Foundry's server—author or role fields inside socket payloads are ignored.
 
 Because players cannot write to Scene documents directly, permanent annotations are saved into `flags.canvas-scribble.items.<id>` by the active GM's client. If no GM is connected or the user lacks permission, the mark falls back to a 60-second temporary map mark with a notice instead of being lost. Permanent marks are capped at 1 MB (configurable) and 3,000 items per scene.
+
+Paint is permanent once it dries: the active GM's client stores each dried 256 × 256-unit area as a small file in `worlds/<world>/canvas-scribble/` and records it in the Scene flags (budget 32 MB per scene by default). Without a GM online, paint stays visible only until the scene is reloaded. The simulation runs in a background worker; a WebGL2 GPU backend is used when it passes a self-test against the CPU reference, otherwise the CPU runs it (client setting *Paint simulation*).
 
 ## Install
 

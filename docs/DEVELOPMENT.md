@@ -4,23 +4,24 @@
 
 - Node.js ≥ 22.18 (the build strips TypeScript types with Node's built-in `module.stripTypeScriptTypes`; tests run
   `.ts` files directly with `node --test`).
-- `npm ci` installs the only runtime dependency (`perfect-freehand`, vendored into the build) and the dev tools
-  (TypeScript, Prettier, `@types/node`).
+- `npm ci` installs the runtime dependencies (`perfect-freehand`, `lazy-brush`, `roughjs`, `simplex-noise`, `fflate`;
+  each vendored into the build with its license) and the dev tools (TypeScript, Prettier, `@types/node`, and
+  `spectral.js`, the reference the pigment tables and tests are checked against).
 
 ## Commands
 
-| Command | What it does |
-|---|---|
-| `npm run typecheck` | `tsc --noEmit` over `src/`, `tests/`, `dev/` |
-| `npm test` | unit tests (`node --test tests/*.test.ts`) |
-| `npm run lint:i18n` | both language files have the same keys and placeholders; every key used in `src/` exists |
-| `npm run format` / `format:check` | Prettier |
-| `npm run build` | `src/` → `dist/` (one `.js` per `.ts`, perfect-freehand vendored with its license) |
-| `npm run validate` | checks `dist/module.json` and that every referenced file exists |
-| `npm run check` | typecheck + i18n + tests + build + validate (what CI runs) |
-| `npm run package` | build, then `release/module.zip` + `release/module.json` |
-| `npm run harness` | build plus the browser harness into `dist-dev/` |
-| `npm run watch` | harness build on every change |
+| Command                           | What it does                                                                              |
+| --------------------------------- | ----------------------------------------------------------------------------------------- |
+| `npm run typecheck`               | `tsc --noEmit` over `src/`, `tests/`, `dev/`                                              |
+| `npm test`                        | unit tests (`node --test tests/*.test.ts`)                                                |
+| `npm run lint:i18n`               | both language files have the same keys and placeholders; every key used in `src/` exists  |
+| `npm run format` / `format:check` | Prettier                                                                                  |
+| `npm run build`                   | `src/` → `dist/` (one `.js` per `.ts`, runtime dependencies vendored with their licenses) |
+| `npm run validate`                | checks `dist/module.json` and that every referenced file exists                           |
+| `npm run check`                   | typecheck + i18n + tests + build + validate (what CI runs)                                |
+| `npm run package`                 | build, then `release/module.zip` + `release/module.json`                                  |
+| `npm run harness`                 | build plus the browser harness into `dist-dev/`                                           |
+| `npm run watch`                   | harness build on every change                                                             |
 
 To try the module in Foundry, copy or link `dist/` to `Data/modules/canvas-scribble/`.
 
@@ -51,6 +52,8 @@ src/
   render/              PIXI integration: tile cache, item sprites, laser trails, renderer, stats
   net/                 protocol (message shapes, validation, cost) and socket wrapper (rate limits)
   foundry/             compat layer, settings, keybindings, canvas layer + scene controls, Scene persistence
+  media/               wet-media paint: brushes, pigment optics, papers, dab exchange, engine (worker), bakes,
+                       controller; sim/ holds the CPU reference and the WebGL2 backend
   input/               pointer capture
   ui/                  palette, popovers, clear menu, cursor, text editor, name tags, debug panel
   types/foundry.d.ts   the slice of Foundry / PIXI typings the module uses
@@ -86,18 +89,20 @@ flags, optional text, `createdAt` / `expiresAt` (server time; `expiresAt: null` 
 
 Socket `module.canvas-scribble`, envelope `{ v, t, scene, … }` (`src/net/protocol.ts`):
 
-| `t` | Meaning |
-|---|---|
-| `s` | live item starts |
-| `p` | live points replacing the tail from index `from` |
-| `b` | up to 12 live `s`/`p` updates in one 33 ms batch; `s` can replace an existing live preview |
-| `e` | final canonical item; `persist: true` asks the active GM to store it |
-| `x` | live item cancelled |
-| `d` | items deleted |
-| `u` | item replaced (partial erase, undo / redo of an erase, layer change) |
-| `c` | tiered clear (`mine`, `screen`, `mapTemp`, `allTemp`, `minePermanent`, `permanent`) |
-| `q` / `r` | late joiner asks for temporary marks / a peer replies with its own |
-| `n` | the GM refused to store an item (permission, budget, count) |
+| `t`                       | Meaning                                                                                      |
+| ------------------------- | -------------------------------------------------------------------------------------------- |
+| `s`                       | live item starts                                                                             |
+| `p`                       | live points replacing the tail from index `from`                                             |
+| `b`                       | up to 12 live `s`/`p` updates in one 33 ms batch; `s` can replace an existing live preview   |
+| `e`                       | final canonical item; `persist: true` asks the active GM to store it                         |
+| `x`                       | live item cancelled                                                                          |
+| `d`                       | items deleted                                                                                |
+| `u`                       | item replaced (partial erase, undo / redo of an erase, layer change)                         |
+| `c`                       | tiered clear (`mine`, `screen`, `mapTemp`, `allTemp`, `minePermanent`, `permanent`, `media`) |
+| `q` / `r`                 | late joiner asks for temporary marks / a peer replies with its own                           |
+| `ms` / `mp` / `me` / `mu` | wet-media stroke start / points / end / undo                                                 |
+| `mq` / `mr`               | late joiner asks for wet-media strokes / a peer replays its own recent ones                  |
+| `n`                       | the GM refused to store an item (permission, budget, count)                                  |
 
 Receivers drop messages from themselves or unknown users, over 256 KB, or malformed, and apply per-sender token buckets
 for messages, points and items. Preview traffic has its own budget so it cannot crowd out final items. Each handler
@@ -107,6 +112,67 @@ re-checks the sender's role against the world permission settings and whether th
 update (60 ms); every client then reads the flags (`updateScene`) and shows the mark from the tile cache. The GM's
 `SceneWriter` also knows items that are queued or being written, so a delete (for example an immediate undo) that
 arrives before the write lands is still applied.
+
+## Wet media (paint tool)
+
+The paint tool simulates the medium instead of drawing a shape: a stroke is a list of input points, and what ends up
+on the map is the result of brush ↔ paper exchange and fluid physics. Code in `src/media/`.
+
+- **Grid.** World-anchored cells of 2 map units (`layout.ts`), in chunks of 128 × 128 cells, created on demand. A chunk
+  is _wet_ (awake: water, saturation, oil, outflows, suspended pigment) or _dry_ (deposited pigment only).
+- **Pigment** (`pigment.ts`, `spectral-tables.ts`). Twelve channels per cell: absorption K in 8 spectral groups,
+  scattering S, amount A, granulation G, staining F. Colours are turned into K/S with the spectral reflectance model
+  of spectral.js (tables generated by `tools/gen-spectral.mjs`). Display uses two-constant Kubelka–Munk for a layer
+  of finite thickness: reflectance R and transmittance T per group, projected to sRGB. Body paint (gouache, oil)
+  scatters and covers; glazes (watercolour, ink) mostly absorb, so layers darken and mix subtractively.
+- **Brush** (`dabs.ts`, `brushes.ts`). Strokes are resampled into dabs at fixed spacing (deterministic). The brush is
+  a reservoir of 8 bristle bands, each holding pigment and water. Each dab deposits from the bands and picks up the
+  wet paint under them (gathered before the batch), so wet colour is dragged along and mixed; as the load runs out a
+  contact threshold on the paper relief produces dry-brush breaks. Bands even out between dabs (wicking).
+- **Paper** (`paper.ts`). A periodic 256² tile per scene (seeded by the scene id): relief, absorbency, fibre
+  direction. Papers differ in absorption, capacity, capillary diffusion and anisotropy, how much pigment the capillary
+  flow carries, how long pigment stays mobile in damp fibres (`bleed`), tooth and evaporation.
+- **Physics** (`sim/cpu.ts`, constants in `sim/physics.ts`), every 50 ms: (A) virtual-pipe outflows from water and
+  relief pressure, with surface tension at dry cells and viscosity from suspended pigment; (B) mass-conserving
+  transport of water and suspended pigment; (C) capillary diffusion of saturation along the fibres carrying a capped
+  share of pigment; (D) absorption, evaporation (faster at wet edges → edge darkening), settling (faster for
+  granulating pigment in the paper's valleys, and once the cell dries), re-wetting lift of non-staining deposits.
+  Oil keeps paint mobile far longer than water.
+- **Backends.** `CpuBackend` is the reference: Float32 planes, only an activity rectangle per chunk is processed.
+  `GpuBackend` (`sim/gpu.ts`) runs the same passes as WebGL2 fragment shaders over an atlas of RGBA32F textures
+  (2×2 chunk slots, growing to 6×6). The engine reserves every chunk needed by a batch before gathering paint and
+  can dry the oldest wet chunks early to fit it (up to 16 wet chunks on CPU and 36 on GPU). The GPU backend is only used
+  after `gpuSelfTest` ran the same strokes on both and they agreed (state, gather and display); `auto` also
+  skips software rasterisers. Setting _Paint simulation backend_ (client) forces `cpu` or `gpu`.
+- **Engine** (`engine.ts`) runs in a module worker (`worker.ts`; inline fallback if workers are unavailable). It
+  queues dabs, steps the wet chunks, dries a chunk when its wet time ends or it and its neighbours are quiet, posts
+  chunk displays (R on top, T² below) and handles undo snapshots, bakes and loads. Dry chunks keep compressed
+  deposits; display buffers cover the viewport only, with reduced resolution at low zoom and a cap per engine tick.
+- **Display** (`render/media-layer.ts`). Per chunk a MULTIPLY sprite with T² and an ADD sprite with R reproduce the
+  composite `R + T²·map` in the primary group (sort layer 645: under the "below" scribbles and tokens, under fog).
+- **Network.** Strokes travel as inputs (`ms` start, `mp` points, `me` end, `mu` undo). Each client simulates locally,
+  then reconciles with the GM's bakes. Late joiners load the bakes and ask (`mq`) peers for their recent strokes
+  (`mr`, ≤ 20 per message). Each bake records which dabs it covers for that chunk so a cross-chunk stroke can replay
+  where it is still missing. When a bake arrives after local paint, the engine reapplies the missing dabs from its
+  bounded replay log; if that history is incomplete, it keeps the local paint. Clients cache recent inputs for scene
+  switches; the GM also receives strokes from scenes it is not viewing. Receivers sanitize strokes and check the
+  sender's `media` permission (default Trusted Player).
+- **Persistence.** When a chunk dries, the active GM bakes its deposits (binary16 planes, deflate via fflate, inside a
+  PNG), wraps the exact bytes in a versioned base64 JSON envelope and uploads it with `FilePicker` to
+  `worlds/<world>/canvas-scribble/<scene>/<cx>_<cy>_<f>.json`. This prevents image-optimization modules from converting
+  simulation data to WebP or altering its pixels. The Scene flag `flags.canvas-scribble.media` keeps
+  `{ paper, chunks: { c<cx>_<cy>: { r, t, n, f, format: "json" } } }`. Each upload gets a new file ID.
+  Paths are derived from validated IDs; older flags without `format` still load PNG, and those without `f` use
+  `<cx>_<cy>.png`. The _Paint storage
+  budget_ covers current Scene references, including pending writes (2048 chunks at most). Superseded or cleared
+  files remain on disk.
+  _Dry now_ waits for uploads and Scene flag writes before confirming a save and guards page refresh while saving.
+  Uploads must confirm the expected file path. Failed uploads and flag writes receive bounded retries; failed flag
+  writes remain queued, and failed uploads leave the dry chunk available for another _Dry now_. Failed bake loads
+  are retried and report a warning even when debug logging is disabled. Confirmed HTTP 404/410 or corrupt files are
+  skipped for that revision without deleting their references; new paint can replace the missing checkpoint.
+  Permissions/network/server failures still block replacing an unloaded base. Upload retries invalidate the directory
+  cache so a deleted folder can be recreated. Missing or converted old paint requires an intact backup to restore.
 
 ## Rendering
 
@@ -135,6 +201,9 @@ them to the console.
   as in Foundry. Extra parameters: `lang=zh`, `theme=light`, `fog=1`, `zoom=0.5`, `gen=14` (v14 mode, `_del`),
   `latency=ms` (Scene update latency), `skew=ms` (server clock offset).
 - `brushes.html` — every brush, shape and item kind rendered with the real painters on dark and light backgrounds.
+
+The harness stores uploaded bakes in IndexedDB (`sim-data/`) and serves them through a patched `fetch`; _reset scene_
+clears them.
 
 `window.__cs` offers scripted input for QA: `stroke(points, { pointerType, pressure, shift, dt, hold })` dispatches real
 `PointerEvent`s on the board, `wave(...)` makes test paths, `key(code, "keydown" | "keyup", mods)`, `summary()` counts

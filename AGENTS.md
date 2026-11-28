@@ -20,8 +20,10 @@ Architecture, protocol and harness details: `docs/DEVELOPMENT.md`; version notes
 
 - No bundler: each `src/**/*.ts` becomes one `dist/scripts/**/*.js` by type stripping. Use only erasable TypeScript
   (no enums, namespaces, parameter properties, decorators) and `.ts` import specifiers.
-- The only runtime dependency is `perfect-freehand`; the build vendors it with its LICENSE. Do not add dependencies
-  without the user's approval.
+- Runtime dependencies (`perfect-freehand`, `lazy-brush`, `roughjs`, `simplex-noise`, `fflate`) are vendored by the
+  build with their LICENSEs. Do not add dependencies without the user's approval.
+- Wet media (`src/media/`): `sim/cpu.ts` is the reference; `sim/gpu.ts` must implement the same equations (keep
+  `gpuSelfTest` passing for every paper). Physics constants live in `sim/physics.ts`.
 - Version-dependent Foundry calls go in `src/foundry/compat.ts`; Foundry/PIXI typings the code needs are declared in
   `src/types/foundry.d.ts` (no foundry-vtt-types dependency).
 - Security model: never trust `author`, role or permission fields from socket payloads or flags. The sender comes from
