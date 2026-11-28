@@ -25,9 +25,11 @@ import { LiveSender, Net } from "./net/net.ts";
 import type { Inbound, SocketLike } from "./net/net.ts";
 import type { ClearScope, Message } from "./net/protocol.ts";
 import type { RenderHost } from "./render/renderer.ts";
-import { activeBrushId, brushBlend, brushOpacity, normalizePrefs, sizeKey } from "./state/prefs.ts";
+import { activeBrushId, brushBlend, brushOpacity, normalizePrefs, pushRecent, sizeKey } from "./state/prefs.ts";
 import type { Prefs, ToolId } from "./state/prefs.ts";
+import { sampleColorAt } from "./tools/eyedropper.ts";
 import { hitItem, hitPath } from "./tools/hit.ts";
+import { rotateItem, scaleItem, translateItem } from "./tools/select.ts";
 import {
   EraserGesture,
   FreehandGesture,
@@ -35,6 +37,7 @@ import {
   PolygonGesture,
   ShapeGesture,
   densePath,
+  toSpace,
 } from "./tools/gestures.ts";
 import type { ClientSample, Gesture, Target, ToolHost } from "./tools/gestures.ts";
 
@@ -87,6 +90,19 @@ export class Session implements ToolHost, RenderHost {
   #level: string | undefined;
   /** Temporary items kept across a canvas redraw of the same scene. */
   #stash: { scene: string; items: ScribbleItem[] } | null = null;
+  /** Currently selected item id (Select & Transform tool). */
+  selectedId: string | null = null;
+  #selectDrag: {
+    id: string;
+    mode: "move" | "scale" | "rotate";
+    original: ScribbleItem;
+    origin: { x: number; y: number };
+    center: { x: number; y: number };
+    startDist: number;
+    startAngle: number;
+    target: Target;
+    moved: boolean;
+  } | null = null;
   /** Custom symmetry axis centre in map space (null = viewport centre). */
   symmetryCenter: { x: number; y: number } | null = null;
   hold: HoldMode | null = null;
@@ -591,6 +607,21 @@ export class Session implements ToolHost, RenderHost {
     }
     this.cancelGesture();
     const { tool, mode } = this.effective();
+    if (tool === "eyedropper") {
+      const picked = sampleColorAt(s.cx, s.cy, this.store.ordered(), this.#map, this.#screen);
+      if (picked) {
+        this.setPrefs({ color: picked, recent: pushRecent(this.prefs, picked), tool: "draw" });
+        this.notify("info", "Notify.ColorPicked", { color: picked });
+      }
+      return true;
+    }
+    if (tool === "select") {
+      return this.#selectDown(s);
+    }
+    if (this.selectedId) {
+      this.selectedId = null;
+      this.changed();
+    }
     const action: Action = mode === "map" ? "map" : "screen";
     if (!this.can(action)) {
       this.notify("warn", mode === "map" ? "Notify.NoMapPermission" : "Notify.NoScreenPermission");
@@ -642,6 +673,11 @@ export class Session implements ToolHost, RenderHost {
   }
 
   pointerMove(samples: ClientSample[], mods: Modifiers): void {
+    if (this.#selectDrag) {
+      const last = samples.at(-1);
+      if (last) this.#selectMove(last, mods);
+      return;
+    }
     if (this.#eraser) this.#eraser.gesture.move(samples);
     else this.#gesture?.move(samples, mods);
   }
@@ -652,6 +688,10 @@ export class Session implements ToolHost, RenderHost {
   }
 
   pointerUp(s: ClientSample, mods: Modifiers): void {
+    if (this.#selectDrag) {
+      this.#selectUp(s, mods);
+      return;
+    }
     if (this.#eraser) {
       this.#eraser.gesture.up(s);
       this.#eraser = null;
@@ -674,6 +714,14 @@ export class Session implements ToolHost, RenderHost {
 
   cancelGesture(): boolean {
     let did = false;
+    if (this.#selectDrag) {
+      const d = this.#selectDrag;
+      this.#selectDrag = null;
+      const state = this.store.get(d.id)?.state;
+      if (state) this.store.put(d.original, state);
+      this.changed();
+      did = true;
+    }
     if (this.#gesture) {
       this.#gesture.cancel();
       this.#gesture = null;
@@ -685,6 +733,159 @@ export class Session implements ToolHost, RenderHost {
       did = true;
     }
     return did;
+  }
+
+  /* -------------------------------------------- */
+  /*  Select & Transform                          */
+  /* -------------------------------------------- */
+
+  selectedEntry(): Entry | null {
+    if (!this.selectedId) return null;
+    return this.store.get(this.selectedId) ?? null;
+  }
+
+  /** Start a scale or rotate drag from a selection handle (called by SelectionOverlay). */
+  startTransformHandle(mode: "scale" | "rotate", cx: number, cy: number): boolean {
+    const entry = this.selectedEntry();
+    if (!entry) return false;
+    const space = this.space(entry.item.mode);
+    if (!space) return false;
+    const target: Target = { mode: entry.item.mode, space, anchor: entry.item.anchor };
+    const p = space.fromClient(cx, cy, entry.item.anchor);
+    const b = entry.bounds;
+    const center = { x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2 };
+    this.#selectDrag = {
+      id: entry.item.id,
+      mode,
+      original: entry.item,
+      origin: p,
+      center,
+      startDist: Math.max(1, Math.hypot(p.x - center.x, p.y - center.y)),
+      startAngle: Math.atan2(p.y - center.y, p.x - center.x),
+      target,
+      moved: false,
+    };
+    return true;
+  }
+
+  #selectDown(s: ClientSample): boolean {
+    const me = game.user;
+    const th = settings.thresholds();
+    const list = this.store.ordered();
+    let hit: Entry | null = null;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const e = list[i]!;
+      const it = e.item;
+      if (it.kind === "laser" || e.state === "live" || e.state === "pending") continue;
+      if (!this.shows(it) || !mayModify(me.id, me.role, it.author, th)) continue;
+      const space = this.space(it.mode);
+      if (!space) continue;
+      const p = space.fromClient(s.cx, s.cy, it.anchor);
+      const r = Math.max(6 / space.cssPerUnit(), 2);
+      if (hitItem(e, p.x, p.y, r)) {
+        hit = e;
+        break;
+      }
+    }
+    this.selectedId = hit ? hit.item.id : null;
+    this.changed();
+    if (!hit) return false;
+    const space = this.space(hit.item.mode)!;
+    const target: Target = { mode: hit.item.mode, space, anchor: hit.item.anchor };
+    const p = toSpace(target, s);
+    const b = hit.bounds;
+    const center = { x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2 };
+    this.#selectDrag = {
+      id: hit.item.id,
+      mode: "move",
+      original: hit.item,
+      origin: p,
+      center,
+      startDist: 1,
+      startAngle: 0,
+      target,
+      moved: false,
+    };
+    return true;
+  }
+
+  #selectMove(s: ClientSample, mods: Modifiers): void {
+    const d = this.#selectDrag;
+    if (!d) return;
+    const p = toSpace(d.target, s);
+    let next: ScribbleItem;
+    if (d.mode === "move") {
+      const dx = p.x - d.origin.x;
+      const dy = p.y - d.origin.y;
+      if (!d.moved && Math.hypot(dx, dy) < 1.5 / d.target.space.cssPerUnit()) return;
+      d.moved = true;
+      next = translateItem(d.original, dx, dy);
+    } else if (d.mode === "scale") {
+      d.moved = true;
+      const dist = Math.max(1, Math.hypot(p.x - d.center.x, p.y - d.center.y));
+      const f = Math.max(0.15, Math.min(8, dist / d.startDist));
+      next = scaleItem(d.original, d.center.x, d.center.y, f, f);
+    } else {
+      d.moved = true;
+      let rad = Math.atan2(p.y - d.center.y, p.x - d.center.x) - d.startAngle;
+      if (mods.shift) rad = Math.round(rad / (Math.PI / 12)) * (Math.PI / 12);
+      next = rotateItem(d.original, d.center.x, d.center.y, rad);
+    }
+    const state = this.store.get(d.id)?.state;
+    if (state) this.store.put(next, state);
+    this.changed();
+  }
+
+  #selectUp(s: ClientSample, mods: Modifiers): void {
+    const d = this.#selectDrag;
+    if (!d) return;
+    this.#selectMove(s, mods);
+    this.#selectDrag = null;
+    if (!d.moved) return;
+    const cur = this.store.get(d.id)?.item;
+    if (!cur) return;
+    this.#replaceItems([cur]);
+    this.history.record({ type: "update", before: [d.original], after: [cur] });
+    this.changed();
+  }
+
+  deleteSelected(): boolean {
+    const entry = this.selectedEntry();
+    if (!entry) return false;
+    this.selectedId = null;
+    this.#removeItems([entry.item]);
+    this.history.record({ type: "delete", items: [entry.item] });
+    this.changed();
+    return true;
+  }
+
+  duplicateSelected(): boolean {
+    const entry = this.selectedEntry();
+    if (!entry) return false;
+    const space = this.space(entry.item.mode);
+    const offset = space ? 18 / space.cssPerUnit() : 20;
+    const shifted = translateItem(entry.item, offset, offset);
+    const copy: ScribbleItem = {
+      ...shifted,
+      id: randomId(16),
+      author: game.user.id,
+      createdAt: this.now(),
+      revision: 0,
+    };
+    this.commit(copy);
+    this.selectedId = copy.id;
+    this.changed();
+    return true;
+  }
+
+  recolorSelected(color: string): boolean {
+    const entry = this.selectedEntry();
+    if (!entry || entry.item.color === color) return false;
+    const after: ScribbleItem = { ...entry.item, color, revision: entry.item.revision + 1 };
+    this.#replaceItems([after]);
+    this.history.record({ type: "update", before: [entry.item], after: [after] });
+    this.changed();
+    return true;
   }
 
   /** Commit a text item from the text editor. */
@@ -1207,6 +1408,13 @@ export class Session implements ToolHost, RenderHost {
     const next = Math.round(wrap(cur + Math.sign(delta) * step));
     const params = { ...this.prefs.brushParams, [id]: { ...(this.prefs.brushParams[id] ?? {}), ang: next } };
     this.setPrefs({ brushParams: params });
+  }
+
+  /** Swap foreground and secondary colour (X key). */
+  swapColors(): void {
+    const cur = this.color();
+    const sec = this.prefs.secondaryColor;
+    this.setPrefs({ color: sec, secondaryColor: cur });
   }
 
   destroy(): void {

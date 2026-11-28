@@ -15,7 +15,9 @@
       "Shape": "形状",
       "Laser": "激光笔",
       "Text": "文字",
-      "Eraser": "橡皮擦"
+      "Eraser": "橡皮擦",
+      "Select": "选择与变换",
+      "Eyedropper": "吸管取色（I）"
     },
     "Mode": {
       "Screen": {
@@ -26,6 +28,13 @@
         "Name": "地图",
         "Hint": "地图：标记贴在地图上，随地图平移缩放"
       }
+    },
+    "BrushCat": {
+      "Ink": "墨水线条",
+      "Flat": "矩形与扁平",
+      "Dry": "干性媒材",
+      "Wet": "湿性与厚涂",
+      "Fx": "特效笔刷"
     },
     "Brush": {
       "Pen": "钢笔",
@@ -45,6 +54,40 @@
       "Neon": "霓虹发光笔",
       "Splatter": "喷溅笔刷"
     },
+    "Blend": {
+      "Normal": "正常",
+      "Multiply": "正片叠底",
+      "Screen": "滤色",
+      "Overlay": "叠加",
+      "Lighter": "线性减淡（发光）"
+    },
+    "AngleMode": {
+      "Fixed": "固定角度",
+      "Follow": "跟随轨迹",
+      "Tilt": "笔倾角",
+      "Twist": "笔杆旋转"
+    },
+    "FillPattern": {
+      "Solid": "实色",
+      "Hachure": "斜线排线",
+      "CrossHatch": "交叉排线",
+      "Dots": "点阵"
+    },
+    "Stabilizer": {
+      "Off": "关闭",
+      "OneEuro": "1€ 自适应",
+      "Lazy": "拉绳防抖"
+    },
+    "Symmetry": {
+      "None": "关闭",
+      "Vertical": "垂直镜像",
+      "Horizontal": "水平镜像",
+      "Quad": "四象限",
+      "Radial4": "4重放射",
+      "Radial6": "6重放射",
+      "Radial8": "8重放射",
+      "Radial12": "12重放射"
+    },
     "Highlight": {
       "Stroke": "荧光笔",
       "Area": "区域（套索填充）"
@@ -62,12 +105,16 @@
     },
     "Eraser": {
       "Stroke": "整笔擦除",
-      "Partial": "局部擦除"
+      "Partial": "局部擦除",
+      "RectNib": "矩形橡皮笔尖",
+      "SoftNib": "柔边羽化橡皮"
     },
     "Style": {
       "Halo": "描边光晕",
       "Dash": "虚线",
-      "Fill": "填充"
+      "Fill": "填充",
+      "Sketchy": "手绘草图风格",
+      "Pattern": "填充图案"
     },
     "Palette": {
       "Label": "随绘幕布调色板",
@@ -76,6 +123,8 @@
       "Tool": "工具",
       "Color": "颜色",
       "Size": "粗细",
+      "Studio": "笔刷工作室与预设",
+      "Aids": "绘画辅助（防抖、对称、吸附）",
       "Labeled": "{label}：{value}",
       "SizeValue": "粗细 {size}",
       "Lifetime": "存续时间",
@@ -84,10 +133,47 @@
       "Collapse": "收起调色板",
       "Expand": "展开调色板"
     },
+    "Studio": {
+      "Opacity": "不透明度",
+      "Blend": "混合模式",
+      "Angle": "笔尖角度",
+      "AngleMode": "角度驱动",
+      "Aspect": "扁平比",
+      "Corner": "矩形圆角",
+      "Hardness": "硬度",
+      "Flow": "流量",
+      "Spacing": "间距",
+      "Scatter": "散布",
+      "Grain": "纸纹肌理",
+      "Reset": "重置",
+      "SavePreset": "存为预设",
+      "PresetName": "预设名称：",
+      "Presets": "自定义预设",
+      "Export": "导出预设 JSON",
+      "ExportPrompt": "复制预设 JSON：",
+      "Import": "导入预设 JSON",
+      "ImportPrompt": "粘贴预设 JSON："
+    },
+    "Aids": {
+      "Stabilizer": "防抖稳定器",
+      "Strength": "防抖强度",
+      "Symmetry": "对称绘图",
+      "Snap": "智能辅助",
+      "QuickShape": "一笔成形（停顿）",
+      "GridSnap": "网格吸附"
+    },
+    "Select": {
+      "Scale": "拖动缩放",
+      "Rotate": "拖动旋转（按住 Shift 吸附 15°）",
+      "Duplicate": "复制（Ctrl+D）",
+      "Recolor": "应用当前颜色",
+      "Delete": "删除"
+    },
     "Color": {
       "Player": "玩家颜色",
       "Recent": "最近使用",
-      "Custom": "自定义颜色"
+      "Custom": "自定义颜色",
+      "Swap": "切换前景色与备选色（Shift+X）"
     },
     "Size": {
       "HintGrid": "地图上的粗细以网格为基准：在任何场景看起来都一致。",
@@ -169,7 +255,8 @@
       "SaveTimeout": "标注未能保存（GM 未及时响应）。",
       "MaskLimit": "部分标记已被局部擦除过多次，请改为整笔擦除。",
       "NothingToUndo": "没有可撤销的操作。",
-      "NothingToRedo": "没有可重做的操作。"
+      "NothingToRedo": "没有可重做的操作。",
+      "ColorPicked": "已取色 {color}。"
     },
     "Settings": {
       "PermScreen": {
@@ -257,6 +344,21 @@
       },
       "SizeUp": {
         "Name": "笔刷变粗"
+      },
+      "AngleLeft": {
+        "Name": "笔尖逆时针旋转"
+      },
+      "AngleRight": {
+        "Name": "笔尖顺时针旋转"
+      },
+      "Eyedropper": {
+        "Name": "吸管取色"
+      },
+      "SwapColors": {
+        "Name": "切换前景色与备选色"
+      },
+      "Duplicate": {
+        "Name": "复制选中的涂鸦"
       },
       "Cancel": {
         "Name": "取消当前笔画",

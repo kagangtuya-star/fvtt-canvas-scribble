@@ -31,6 +31,8 @@ const TOOL_ICONS: Record<ToolId, string> = {
   laser: "fa-solid fa-wand-sparkles",
   text: "fa-solid fa-font",
   eraser: "fa-solid fa-eraser",
+  select: "fa-solid fa-arrow-pointer",
+  eyedropper: "fa-solid fa-eye-dropper",
 };
 
 const TOOL_LABELS: Record<ToolId, string> = {
@@ -41,6 +43,8 @@ const TOOL_LABELS: Record<ToolId, string> = {
   laser: "Tools.Laser",
   text: "Tools.Text",
   eraser: "Tools.Eraser",
+  select: "Tools.Select",
+  eyedropper: "Tools.Eyedropper",
 };
 
 let hooks: LayerHooks | null = null;
@@ -164,7 +168,7 @@ export function defineLayer(h: LayerHooks): unknown {
     }
 
     _onDeleteKey(_event: KeyboardEvent) {
-      return false;
+      return h.session.deleteSelected();
     }
   }
 

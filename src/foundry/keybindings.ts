@@ -115,6 +115,67 @@ export function registerKeybindings(getSession: () => Session | null, ui: { onHo
     },
   });
 
+  register("angleLeft", {
+    name: k("Keys.AngleLeft.Name"),
+    editable: [{ key: "Comma" }],
+    precedence: PRIORITY,
+    repeat: true,
+    onDown: (ctx) => {
+      const s = getSession();
+      if (!s || (!layerActive() && !s.hold)) return false;
+      s.nudgeAngle(-1, ctx.isShift ? 5 : 15);
+      return true;
+    },
+  });
+
+  register("angleRight", {
+    name: k("Keys.AngleRight.Name"),
+    editable: [{ key: "Period" }],
+    precedence: PRIORITY,
+    repeat: true,
+    onDown: (ctx) => {
+      const s = getSession();
+      if (!s || (!layerActive() && !s.hold)) return false;
+      s.nudgeAngle(1, ctx.isShift ? 5 : 15);
+      return true;
+    },
+  });
+
+  register("eyedropper", {
+    name: k("Keys.Eyedropper.Name"),
+    editable: [{ key: "KeyI" }],
+    precedence: PRIORITY,
+    onDown: () => {
+      const s = getSession();
+      if (!s || !layerActive()) return false;
+      s.setPrefs({ tool: "eyedropper" });
+      return true;
+    },
+  });
+
+  register("swapColors", {
+    name: k("Keys.SwapColors.Name"),
+    editable: [{ key: "KeyX", modifiers: ["Shift"] }],
+    precedence: PRIORITY,
+    onDown: () => {
+      const s = getSession();
+      if (!s || !layerActive()) return false;
+      s.swapColors();
+      return true;
+    },
+  });
+
+  register("duplicate", {
+    name: k("Keys.Duplicate.Name"),
+    editable: [{ key: "KeyD", modifiers: ["Control"] }],
+    precedence: PRIORITY,
+    onDown: () => {
+      const s = getSession();
+      if (!s || !layerActive()) return false;
+      return s.duplicateSelected();
+    },
+  });
+
   register("cancel", {
     name: k("Keys.Cancel.Name"),
     hint: k("Keys.Cancel.Hint"),

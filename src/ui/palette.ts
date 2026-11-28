@@ -1,18 +1,20 @@
-import { BRUSHES, DEFAULT_PALETTE, DRAW_BRUSHES, SIZE_PRESETS, UI_SIZE } from "../brush/brushes.ts";
+import { BRUSHES, DEFAULT_PALETTE, SIZE_PRESETS, UI_SIZE, resolveBrushParams } from "../brush/brushes.ts";
 import { FADE_PRESETS, LIFETIME_PRESETS, formatLifetime, parseLifetime } from "../core/lifetime.ts";
-import type { MapLayer } from "../core/types.ts";
+import { FILL_PATTERNS } from "../core/types.ts";
+import type { BrushId, MapLayer } from "../core/types.ts";
 import { userColor } from "../foundry/compat.ts";
 import { t, tf } from "../i18n.ts";
 import type { Session } from "../session.ts";
-import { sizeKey, TOOL_IDS, pushRecent } from "../state/prefs.ts";
+import { activeBrushId, brushOpacity, pushRecent, sizeKey, TOOL_IDS } from "../state/prefs.ts";
 import type { Prefs, ToolId } from "../state/prefs.ts";
+import { buildAidsMenu, buildBrushStudio } from "./brush-studio.ts";
 import { h, icon, iconButton, themeClass } from "./dom.ts";
 import { Popover, togglePopover } from "./popover.ts";
 
 /**
  * Quick palette: a compact bar docked above the hotbar (or dragged anywhere).
- * Mode, tool, contextual variants, colour, size, lifetime, layer, undo/redo
- * and the clear menu. Everything else lives in the module settings.
+ * Mode, tool, contextual variants, Brush Studio, Drawing Aids, colour, size &
+ * opacity, lifetime, layer, undo/redo and the clear menu.
  */
 
 export const TOOL_ICON: Record<ToolId, string> = {
@@ -23,7 +25,20 @@ export const TOOL_ICON: Record<ToolId, string> = {
   laser: "fa-solid fa-wand-sparkles",
   text: "fa-solid fa-font",
   eraser: "fa-solid fa-eraser",
+  select: "fa-solid fa-arrow-pointer",
+  eyedropper: "fa-solid fa-eye-dropper",
 };
+
+/** Curated quick-access brushes shown directly on the bar; all 16 live in Brush Studio. */
+const QUICK_BRUSHES: readonly Exclude<BrushId, "highlighter">[] = [
+  "pen",
+  "pressure",
+  "flat",
+  "calligraphy",
+  "bristle",
+  "pencil",
+  "airbrush",
+];
 
 const SHAPE_ICON = {
   line: "fa-solid fa-minus",
@@ -212,7 +227,7 @@ export class Palette {
       if (variants) bar.append(variants);
     }
 
-    // Colour, size, lifetime, layer
+    // Colour, size, Studio/Aids, lifetime, layer
     const style = h("div", { class: "cs-group" });
     const color = s.color();
     const colorBtn = h(
@@ -231,7 +246,8 @@ export class Palette {
       togglePopover(colorBtn, () => this.#colorMenu(), { label: t("Palette.Color") }),
     );
     style.append(colorBtn);
-    if (tool !== "laser" || !p.compact) {
+
+    if (tool !== "select" && tool !== "eyedropper" && (tool !== "laser" || !p.compact)) {
       const size = p.sizes[sizeKey({ ...p, tool })];
       const sizeBtn = h(
         "button",
@@ -254,7 +270,35 @@ export class Palette {
       );
       style.append(sizeBtn);
     }
-    if (tool !== "eraser") {
+
+    // Brush Studio button (draw & highlighter)
+    if (tool === "draw" || (tool === "highlight" && p.highlight === "stroke")) {
+      const studioBtn = iconButton(
+        "fa-solid fa-sliders",
+        t("Palette.Studio"),
+        (e) =>
+          togglePopover(e.currentTarget as HTMLElement, () => buildBrushStudio(s), {
+            className: "cs-popover-wide",
+            label: t("Palette.Studio"),
+          }),
+        { extra: "cs-chip", data: { pop: "studio" } },
+      );
+      style.append(studioBtn);
+    }
+
+    // Drawing Aids button (stabilizer, symmetry, quickShape, gridSnap)
+    if (!p.compact && (tool === "draw" || tool === "shape" || tool === "highlight" || tool === "arrow")) {
+      const aidsActive = p.stabilizer !== "off" || p.symmetry !== "none" || p.gridSnap;
+      const aidsBtn = iconButton(
+        "fa-solid fa-compass-drafting",
+        t("Palette.Aids"),
+        (e) => togglePopover(e.currentTarget as HTMLElement, () => buildAidsMenu(s), { label: t("Palette.Aids") }),
+        { pressed: aidsActive, extra: "cs-chip", data: { pop: "aids" } },
+      );
+      style.append(aidsBtn);
+    }
+
+    if (tool !== "eraser" && tool !== "select" && tool !== "eyedropper") {
       const life = tool === "laser" ? p.laserTrail : s.lifetimeFor(mode);
       const lifeBtn = h(
         "button",
@@ -273,7 +317,7 @@ export class Palette {
       );
       style.append(lifeBtn);
     }
-    if (mode === "map" && tool !== "laser" && tool !== "eraser") {
+    if (mode === "map" && tool !== "laser" && tool !== "eraser" && tool !== "select" && tool !== "eyedropper") {
       const permanent = s.lifetimeFor("map") === 0;
       const layer = permanent ? p.layer.permanent : p.layer.temporary;
       const layerBtn = iconButton(
@@ -332,12 +376,13 @@ export class Palette {
     const opt = (iconCls: string, label: string, pressed: boolean, apply: () => void) =>
       group.append(iconButton(iconCls, label, apply, { pressed }));
     switch (tool) {
-      case "draw":
-        for (const b of DRAW_BRUSHES) {
-          if (b === "highlighter") continue;
-          opt(BRUSHES[b].icon, t(`Brush.${cap(b)}`), p.brush === b, () => s.setPrefs({ brush: b as Prefs["brush"] }));
+      case "draw": {
+        const list = QUICK_BRUSHES.includes(p.brush) ? QUICK_BRUSHES : [...QUICK_BRUSHES.slice(0, 6), p.brush];
+        for (const b of list) {
+          opt(BRUSHES[b].icon, t(`Brush.${cap(b)}`), p.brush === b, () => s.setPrefs({ brush: b }));
         }
         break;
+      }
       case "highlight":
         opt("fa-solid fa-highlighter", t("Highlight.Stroke"), p.highlight === "stroke", () =>
           s.setPrefs({ highlight: "stroke" }),
@@ -345,6 +390,22 @@ export class Palette {
         opt("fa-solid fa-draw-polygon", t("Highlight.Area"), p.highlight === "area", () =>
           s.setPrefs({ highlight: "area" }),
         );
+        if (p.highlight === "area") {
+          group.append(h("span", { class: "cs-sep" }));
+          opt("fa-solid fa-wand-magic-sparkles", t("Style.Sketchy"), p.roughness > 0, () =>
+            s.setPrefs({ roughness: p.roughness > 0 ? 0 : 1.4 }),
+          );
+          const nextPat = FILL_PATTERNS[(FILL_PATTERNS.indexOf(p.fillPattern) + 1) % FILL_PATTERNS.length]!;
+          opt(
+            "fa-solid fa-grip-lines",
+            labeled(
+              t("Style.Pattern"),
+              t(`FillPattern.${cap(p.fillPattern === "cross-hatch" ? "CrossHatch" : p.fillPattern)}`),
+            ),
+            p.fillPattern !== "solid",
+            () => s.setPrefs({ fillPattern: nextPat }),
+          );
+        }
         break;
       case "arrow":
         opt("fa-solid fa-arrow-right-long", t("Arrow.Straight"), p.arrow === "straight", () =>
@@ -357,19 +418,42 @@ export class Palette {
         );
         opt("fa-solid fa-ellipsis", t("Style.Dash"), p.dash, () => s.setPrefs({ dash: !p.dash }));
         break;
-      case "shape":
+      case "shape": {
         for (const v of ["line", "rect", "ellipse", "polygon"] as const) {
           opt(SHAPE_ICON[v], t(`Shape.${cap(v)}`), p.shape === v, () => s.setPrefs({ shape: v }));
         }
         group.append(h("span", { class: "cs-sep" }));
         opt("fa-solid fa-fill-drip", t("Style.Fill"), p.fill, () => s.setPrefs({ fill: !p.fill }));
         opt("fa-solid fa-ellipsis", t("Style.Dash"), p.dash, () => s.setPrefs({ dash: !p.dash }));
+        opt("fa-solid fa-wand-magic-sparkles", t("Style.Sketchy"), p.roughness > 0, () =>
+          s.setPrefs({ roughness: p.roughness > 0 ? 0 : 1.4 }),
+        );
+        const nextPat = FILL_PATTERNS[(FILL_PATTERNS.indexOf(p.fillPattern) + 1) % FILL_PATTERNS.length]!;
+        opt(
+          "fa-solid fa-grip-lines",
+          labeled(
+            t("Style.Pattern"),
+            t(`FillPattern.${cap(p.fillPattern === "cross-hatch" ? "CrossHatch" : p.fillPattern)}`),
+          ),
+          p.fillPattern !== "solid",
+          () => s.setPrefs({ fillPattern: nextPat, fill: true }),
+        );
         break;
+      }
       case "eraser":
         opt("fa-solid fa-eraser", t("Eraser.Stroke"), p.eraser === "stroke", () => s.setPrefs({ eraser: "stroke" }));
         opt("fa-solid fa-scissors", t("Eraser.Partial"), p.eraser === "partial", () =>
           s.setPrefs({ eraser: "partial" }),
         );
+        if (p.eraser === "partial") {
+          group.append(h("span", { class: "cs-sep" }));
+          opt("fa-solid fa-square", t("Eraser.RectNib"), p.eraserTip === "rect", () =>
+            s.setPrefs({ eraserTip: p.eraserTip === "rect" ? "round" : "rect" }),
+          );
+          opt("fa-solid fa-cloud", t("Eraser.SoftNib"), p.eraserHardness < 0.9, () =>
+            s.setPrefs({ eraserHardness: p.eraserHardness < 0.9 ? 1 : 0.3 }),
+          );
+        }
         break;
       case "text":
         break;
@@ -423,6 +507,7 @@ export class Palette {
       });
       b.addEventListener("click", () => {
         s.setPrefs({ color: c });
+        if (s.selectedId) s.recolorSelected(value);
       });
       return b;
     };
@@ -439,9 +524,37 @@ export class Palette {
     custom.addEventListener("change", () => {
       const c = custom.value.toLowerCase();
       s.setPrefs({ color: c, recent: pushRecent(p, c) });
+      if (s.selectedId) s.recolorSelected(c);
+    });
+    const swapBtn = h(
+      "button",
+      {
+        type: "button",
+        class: "cs-preset cs-swap-btn",
+        "data-tooltip": t("Color.Swap"),
+        style: `--cs-sec:${p.secondaryColor}`,
+      },
+      h("span", { class: "cs-sec-swatch" }),
+      icon("fa-solid fa-repeat"),
+    );
+    swapBtn.addEventListener("click", () => s.swapColors());
+    const pickBtn = h(
+      "button",
+      { type: "button", class: "cs-preset", "data-tooltip": t("Tools.Eyedropper") },
+      icon("fa-solid fa-eye-dropper"),
+    );
+    pickBtn.addEventListener("click", () => {
+      s.setPrefs({ tool: "eyedropper" });
+      Popover.closeAll();
     });
     wrap.append(
-      h("label", { class: "cs-custom" }, icon("fa-solid fa-eye-dropper"), h("span", {}, t("Color.Custom")), custom),
+      h(
+        "div",
+        { class: "cs-color-footer" },
+        h("label", { class: "cs-custom" }, h("span", {}, t("Color.Custom")), custom),
+        swapBtn,
+        pickBtn,
+      ),
     );
     return wrap;
   }
@@ -465,13 +578,31 @@ export class Palette {
       value,
       "aria-label": t("Palette.Size"),
     }) as HTMLInputElement;
-    const paint = (v: number) => {
-      // On-screen diameter of the brush right now (map sizes depend on grid and zoom).
+    const brushId = activeBrushId({ ...s.prefs, tool });
+    const paint = (v: number, op = brushId ? brushOpacity(s.prefs, brushId) : 1) => {
       const space = s.space(mode);
       const scale = key in BRUSHES ? BRUSHES[key as keyof typeof BRUSHES].widthScale : 1;
       const css = space ? space.widthFor(v, scale) * space.cssPerUnit() : v;
-      const d = Math.max(1, Math.min(72, css));
-      dot.style.width = dot.style.height = `${d}px`;
+      const d = Math.max(2, Math.min(68, css));
+      if (brushId && (BRUSHES[brushId].tip === "rect" || BRUSHES[brushId].tip === "bristle")) {
+        const params = resolveBrushParams(BRUSHES[brushId], s.prefs.brushParams[brushId]);
+        const hgt = Math.max(2, d * params.aspect);
+        dot.style.width = `${d}px`;
+        dot.style.height = `${hgt}px`;
+        dot.style.borderRadius = `${Math.round((Math.min(d, hgt) / 2) * params.corner)}px`;
+        dot.style.transform = `rotate(${params.angle}deg)`;
+      } else if (key === "eraser" && s.prefs.eraserTip === "rect") {
+        const hgt = Math.max(2, d * s.prefs.eraserAspect);
+        dot.style.width = `${d}px`;
+        dot.style.height = `${hgt}px`;
+        dot.style.borderRadius = "1px";
+        dot.style.transform = `rotate(${s.prefs.eraserAngle}deg)`;
+      } else {
+        dot.style.width = dot.style.height = `${d}px`;
+        dot.style.borderRadius = "50%";
+        dot.style.transform = "";
+      }
+      dot.style.opacity = String(op);
       dot.style.background = key === "eraser" ? "transparent" : s.color();
       dot.classList.toggle("eraser", key === "eraser");
       num.textContent = String(v);
@@ -491,6 +622,31 @@ export class Palette {
       presets.append(b);
     }
     wrap.append(h("div", { class: "cs-size-row" }, preview, slider, num), presets);
+
+    // Quick Opacity slider right in the size menu for brushes!
+    if (brushId) {
+      const opVal = Math.round(brushOpacity(s.prefs, brushId) * 100);
+      const opNum = h("output", { class: "cs-size-num" }, `${opVal}%`);
+      const opSlider = h("input", {
+        type: "range",
+        min: 5,
+        max: 100,
+        step: 1,
+        value: opVal,
+        "aria-label": t("Studio.Opacity"),
+      }) as HTMLInputElement;
+      opSlider.addEventListener("input", () => {
+        opNum.textContent = `${opSlider.value}%`;
+        paint(Number(slider.value), Number(opSlider.value) / 100);
+      });
+      opSlider.addEventListener("change", () =>
+        s.setPrefs({ opacities: { ...s.prefs.opacities, [brushId]: Number(opSlider.value) / 100 } }),
+      );
+      wrap.append(
+        h("div", { class: "cs-size-row" }, h("span", { class: "cs-label" }, t("Studio.Opacity")), opSlider, opNum),
+      );
+    }
+
     if (mode === "map" && key !== "eraser")
       wrap.append(h("p", { class: "cs-hint" }, t(s.map()?.followZoom ? "Size.HintZoom" : "Size.HintGrid")));
     return wrap;

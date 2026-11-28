@@ -14,8 +14,18 @@ import { clamp } from "../core/util.ts";
  * must never break the UI.
  */
 
-export type ToolId = "draw" | "highlight" | "arrow" | "shape" | "laser" | "text" | "eraser";
-export const TOOL_IDS: readonly ToolId[] = ["draw", "highlight", "arrow", "shape", "laser", "text", "eraser"];
+export type ToolId = "draw" | "highlight" | "arrow" | "shape" | "laser" | "text" | "eraser" | "select" | "eyedropper";
+export const TOOL_IDS: readonly ToolId[] = [
+  "draw",
+  "highlight",
+  "arrow",
+  "shape",
+  "laser",
+  "text",
+  "eraser",
+  "select",
+  "eyedropper",
+];
 
 export type ShapeVariant = "line" | "rect" | "ellipse" | "polygon";
 export const SHAPE_VARIANTS: readonly ShapeVariant[] = ["line", "rect", "ellipse", "polygon"];
@@ -63,6 +73,8 @@ export interface Prefs {
   eraserHardness: number;
   /** `null` = the user's player colour. */
   color: string | null;
+  /** Secondary / swap colour (`X` swaps with foreground). */
+  secondaryColor: string;
   recent: string[];
   sizes: Record<SizeKey, number>;
   /** Per-brush opacity overrides (0.05..1); absent = brush default. */
@@ -116,6 +128,7 @@ export const DEFAULT_PREFS: Prefs = {
   eraserAspect: 0.5,
   eraserHardness: 1,
   color: null,
+  secondaryColor: "#f4f1ea",
   recent: [],
   sizes: {
     pen: BRUSHES.pen.defaultSize,
@@ -219,6 +232,8 @@ export function normalizePrefs(raw: unknown): Prefs {
   }
   const brushes = BRUSH_IDS.filter((b) => b !== "highlighter") as Prefs["brush"][];
   const color = typeof r.color === "string" && HEX.test(r.color) ? r.color : null;
+  const secondaryColor =
+    typeof r.secondaryColor === "string" && HEX.test(r.secondaryColor) ? r.secondaryColor : d.secondaryColor;
   const recent = Array.isArray(r.recent)
     ? r.recent.filter((c: unknown) => typeof c === "string" && HEX.test(c)).slice(0, 8)
     : [];
@@ -287,6 +302,7 @@ export function normalizePrefs(raw: unknown): Prefs {
     eraserAspect: numIn(r.eraserAspect, 0.1, 1, d.eraserAspect),
     eraserHardness: numIn(r.eraserHardness, 0, 1, d.eraserHardness),
     color,
+    secondaryColor,
     recent,
     sizes,
     opacities,
@@ -343,6 +359,8 @@ export function sizeKey(p: Prefs): SizeKey {
       return p.brush;
     case "highlight":
       return p.highlight === "area" ? "area" : "highlighter";
+    case "select":
+    case "eyedropper":
       return p.brush;
     default:
       return p.tool;

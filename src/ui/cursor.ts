@@ -1,12 +1,13 @@
-import { BRUSHES } from "../brush/brushes.ts";
+import { BRUSHES, resolveBrushParams } from "../brush/brushes.ts";
 import type { Session } from "../session.ts";
-import { sizeKey } from "../state/prefs.ts";
+import { activeBrushId, sizeKey } from "../state/prefs.ts";
 import { h } from "./dom.ts";
 
 /**
- * Brush cursor over the board: a ring the size of the stroke on screen, in
- * the current colour (dashed for the eraser, a dot for the laser, an I-beam
- * for text). The system cursor is hidden only while the ring is shown.
+ * Brush cursor over the board: displays the true nib geometry on screen
+ * (circle for round brushes, rotated rectangle/rounded-rect for flat,
+ * calligraphy, bristle, pixel, chisel and rectangular eraser nibs; dot for
+ * laser; I-beam for text). System cursor stays visible for select/eyedropper.
  */
 export class BrushCursor {
   readonly element: HTMLElement;
@@ -23,8 +24,10 @@ export class BrushCursor {
   }
 
   update(cx: number, cy: number, over: boolean, pointerType: string): void {
-    // Pens and fingers have no hover cursor worth replacing.
-    const show = over && pointerType !== "touch";
+    const { tool } = this.#session.effective();
+    const nativeTool = tool === "select" || tool === "eyedropper";
+    // Pens and fingers have no hover cursor worth replacing; select/eyedropper use system cursor.
+    const show = over && pointerType !== "touch" && !nativeTool;
     this.#x = cx;
     this.#y = cy;
     if (show !== this.#visible) {
@@ -35,11 +38,15 @@ export class BrushCursor {
     if (show) this.refresh();
   }
 
-  /** Re-read size/colour (prefs or zoom changed). */
+  /** Re-read size/nib shape/angle/colour (prefs or zoom changed). */
   refresh(): void {
     if (!this.#visible) return;
     const s = this.#session;
     const { tool, mode } = s.effective();
+    if (tool === "select" || tool === "eyedropper") {
+      this.hide();
+      return;
+    }
     const key = sizeKey({ ...s.prefs, tool });
     const space = s.space(mode);
     let d = s.prefs.sizes[key];
@@ -49,12 +56,40 @@ export class BrushCursor {
     }
     if (tool === "text") d = 2;
     d = Math.max(4, Math.min(400, d));
+
+    let w = d;
+    let hgt = d;
+    let angle = 0;
+    let radius = "50%";
+    let nibShape = "round";
+
+    const brushId = activeBrushId({ ...s.prefs, tool });
+    if (brushId) {
+      const brush = BRUSHES[brushId];
+      const params = resolveBrushParams(brush, s.prefs.brushParams[brushId]);
+      if (brush.tip === "rect" || brush.tip === "bristle") {
+        nibShape = "rect";
+        hgt = Math.max(3, d * params.aspect);
+        angle = params.angleMode === "fixed" ? params.angle : params.angle;
+        const rPx = Math.round((Math.min(w, hgt) / 2) * params.corner);
+        radius = `${rPx}px`;
+      }
+    } else if (tool === "eraser" && s.prefs.eraserTip === "rect") {
+      nibShape = "rect";
+      hgt = Math.max(3, d * s.prefs.eraserAspect);
+      angle = s.prefs.eraserAngle;
+      radius = "1px";
+    }
+
     const el = this.element;
     el.dataset.tool = tool;
     el.dataset.mode = mode;
+    el.dataset.nib = nibShape;
     el.style.setProperty("--cs-color", s.color());
-    el.style.width = el.style.height = `${d}px`;
-    el.style.transform = `translate(${this.#x - d / 2}px, ${this.#y - d / 2}px)`;
+    el.style.width = `${w}px`;
+    el.style.height = `${hgt}px`;
+    el.style.borderRadius = radius;
+    el.style.transform = `translate(${this.#x - w / 2}px, ${this.#y - hgt / 2}px) rotate(${angle}deg)`;
   }
 
   hide(): void {

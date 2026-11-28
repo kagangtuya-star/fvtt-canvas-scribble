@@ -71,8 +71,31 @@ for (const file of walk(join(ROOT, "src"))) {
 }
 // Dynamic keys (template literals in the UI).
 const dynamic = {
-  Tools: ["draw", "highlight", "arrow", "shape", "laser", "text", "eraser"],
-  Brush: ["pen", "pressure", "pencil", "marker", "fineliner", "soft", "chalk"],
+  Tools: ["draw", "highlight", "arrow", "shape", "laser", "text", "eraser", "select", "eyedropper"],
+  Brush: [
+    "pen",
+    "pressure",
+    "pencil",
+    "marker",
+    "fineliner",
+    "soft",
+    "chalk",
+    "flat",
+    "calligraphy",
+    "bristle",
+    "pixel",
+    "charcoal",
+    "airbrush",
+    "watercolor",
+    "neon",
+    "splatter",
+  ],
+  BrushCat: ["ink", "flat", "dry", "wet", "fx"],
+  Blend: ["normal", "multiply", "screen", "overlay", "lighter"],
+  AngleMode: ["fixed", "follow", "tilt", "twist"],
+  FillPattern: ["solid", "hachure", "crossHatch", "dots"],
+  Stabilizer: ["off", "oneEuro", "lazy"],
+  Symmetry: ["none", "vertical", "horizontal", "quad", "radial4", "radial6", "radial8", "radial12"],
   Shape: ["line", "rect", "ellipse", "polygon"],
   Hold: ["screen", "map", "laser", "eraser"],
 };

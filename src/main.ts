@@ -11,6 +11,7 @@ import type { Prefs, ToolId } from "./state/prefs.ts";
 import { TOOL_IDS } from "./state/prefs.ts";
 import { openClearMenu, runClear } from "./ui/clear-menu.ts";
 import { BrushCursor } from "./ui/cursor.ts";
+import { GuidesOverlay } from "./ui/guides.ts";
 import { DebugPanel, NameTags } from "./ui/overlay.ts";
 import { Palette } from "./ui/palette.ts";
 import { TextEditor } from "./ui/text-editor.ts";
@@ -24,6 +25,7 @@ interface App {
   session: Session;
   palette: Palette;
   cursor: BrushCursor;
+  guides: GuidesOverlay;
   input: PointerInput;
   text: TextEditor;
   names: NameTags;
@@ -54,6 +56,7 @@ function refreshUI(): void {
   app.palette.show(paletteWanted(app));
   app.palette.render();
   app.cursor.refresh();
+  app.guides.setActive(boardEnabled());
 }
 
 function setHidden(hidden: boolean): void {
@@ -97,6 +100,7 @@ Hooks.once("setup", () => {
       hidden: () => app?.hidden ?? false,
     }),
     cursor: new BrushCursor(session),
+    guides: new GuidesOverlay(session),
     input: null as unknown as PointerInput,
     text: new TextEditor(session),
     names: new NameTags(session),
@@ -168,13 +172,17 @@ Hooks.on("canvasTearDown", () => {
   app.session.detach();
   app.palette.show(false);
   app.cursor.hide();
+  app.guides.setActive(false);
   app.names.update(false, true);
 });
 
 Hooks.on("updateScene", (scene: FoundryScene, changes: Record<string, unknown>) =>
   app?.session.onSceneUpdate(scene, changes),
 );
-Hooks.on("canvasPan", () => app?.cursor.refresh());
+Hooks.on("canvasPan", () => {
+  app?.cursor.refresh();
+  app?.guides.refresh();
+});
 Hooks.on("userConnected", (user: FoundryUser, connected: boolean) => {
   if (!connected) app?.session.onUserGone(user.id);
 });
@@ -186,6 +194,7 @@ window.addEventListener("resize", () => {
   if (!app) return;
   app.session.updateViewport();
   app.cursor.refresh();
+  app.guides.refresh();
 });
 
 /* -------------------------------------------- */

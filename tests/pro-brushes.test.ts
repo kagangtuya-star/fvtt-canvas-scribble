@@ -12,6 +12,7 @@ import { itemBounds } from "../src/core/store.ts";
 import { BRUSH_IDS } from "../src/core/types.ts";
 import { readStored } from "../src/foundry/persistence.ts";
 import { DEFAULT_PREFS, activeBrushId, brushBlend, brushOpacity, normalizePrefs } from "../src/state/prefs.ts";
+import { rotateItem, scaleItem, translateItem } from "../src/tools/select.ts";
 import { BOB, SCENE, makeItem } from "./helpers.ts";
 
 const NOW = 1_000_000;
@@ -249,7 +250,7 @@ describe("QuickShape recognition", () => {
   });
 });
 
-describe("symmetry", () => {
+describe("symmetry & select/transform", () => {
   it("generates mirror and radial transforms cleanly", () => {
     assert.equal(symmetryTransforms("vertical", 100, 100).length, 2);
     assert.equal(symmetryTransforms("quad", 100, 100).length, 4);
@@ -280,6 +281,23 @@ describe("symmetry", () => {
     assert.ok(Math.abs(Math.max(...ys) - Math.min(...ys) - 100 * Math.SQRT2) < 0.01);
     assert.equal(quarterTurn.tool, "rect");
     assert.deepEqual(quantizePoints(quarterTurn.points), quantizePoints(rect.points));
+  });
+
+  it("translates, scales and rotates items (promoting rotated rect to polygon)", () => {
+    const stroke = makeItem({ points: [0, 0, 0.5, 20, 0, 0.5], size: 4 });
+    const moved = translateItem(stroke, 10, -5);
+    assert.deepEqual(moved.points, quantizePoints([10, -5, 0.5, 30, -5, 0.5]));
+    assert.equal(moved.revision, 1);
+
+    const scaled = scaleItem(stroke, 0, 0, 2, 2);
+    assert.deepEqual(scaled.points, quantizePoints([0, 0, 0.5, 40, 0, 0.5]));
+    assert.equal(scaled.size, 8);
+
+    const rect = makeItem({ kind: "shape", tool: "rect", points: [0, 0, 0.5, 20, 10, 0.5] });
+    const rotated = rotateItem(rect, 10, 5, Math.PI / 2);
+    assert.equal(rotated.tool, "polygon");
+    assert.equal(rotated.style.closed, true);
+    assert.equal(rotated.points.length, 12);
   });
 });
 

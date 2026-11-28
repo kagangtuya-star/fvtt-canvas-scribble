@@ -15,7 +15,9 @@
       "Shape": "Shape",
       "Laser": "Laser pointer",
       "Text": "Text",
-      "Eraser": "Eraser"
+      "Eraser": "Eraser",
+      "Select": "Select & transform",
+      "Eyedropper": "Eyedropper (I)"
     },
     "Mode": {
       "Screen": {
@@ -26,6 +28,13 @@
         "Name": "Map",
         "Hint": "Map — marks stick to the map and move with it"
       }
+    },
+    "BrushCat": {
+      "Ink": "Ink",
+      "Flat": "Flat & Rectangular",
+      "Dry": "Dry Media",
+      "Wet": "Wet & Paint",
+      "Fx": "Effects"
     },
     "Brush": {
       "Pen": "Pen",
@@ -45,6 +54,40 @@
       "Neon": "Neon glow",
       "Splatter": "Splatter"
     },
+    "Blend": {
+      "Normal": "Normal",
+      "Multiply": "Multiply",
+      "Screen": "Screen",
+      "Overlay": "Overlay",
+      "Lighter": "Add (Glow)"
+    },
+    "AngleMode": {
+      "Fixed": "Fixed angle",
+      "Follow": "Follow stroke",
+      "Tilt": "Pen tilt",
+      "Twist": "Pen twist"
+    },
+    "FillPattern": {
+      "Solid": "Solid",
+      "Hachure": "Hachure",
+      "CrossHatch": "Cross-hatch",
+      "Dots": "Dots"
+    },
+    "Stabilizer": {
+      "Off": "Off",
+      "OneEuro": "1€ Filter",
+      "Lazy": "Lazy string"
+    },
+    "Symmetry": {
+      "None": "Off",
+      "Vertical": "Vertical",
+      "Horizontal": "Horizontal",
+      "Quad": "Quad",
+      "Radial4": "4× Radial",
+      "Radial6": "6× Radial",
+      "Radial8": "8× Radial",
+      "Radial12": "12× Radial"
+    },
     "Highlight": {
       "Stroke": "Highlighter",
       "Area": "Area (lasso fill)"
@@ -62,12 +105,16 @@
     },
     "Eraser": {
       "Stroke": "Erase whole marks",
-      "Partial": "Erase parts"
+      "Partial": "Erase parts",
+      "RectNib": "Rectangular eraser nib",
+      "SoftNib": "Soft feathered eraser"
     },
     "Style": {
       "Halo": "Contrast halo",
       "Dash": "Dashed",
-      "Fill": "Fill"
+      "Fill": "Fill",
+      "Sketchy": "Hand-drawn sketchy style",
+      "Pattern": "Fill pattern"
     },
     "Palette": {
       "Label": "CanvasScribble palette",
@@ -76,6 +123,8 @@
       "Tool": "Tool",
       "Color": "Colour",
       "Size": "Size",
+      "Studio": "Brush Studio & Presets",
+      "Aids": "Drawing aids (stabilizer, symmetry, snap)",
       "Labeled": "{label}: {value}",
       "SizeValue": "Size {size}",
       "Lifetime": "Lifetime",
@@ -84,10 +133,47 @@
       "Collapse": "Collapse palette",
       "Expand": "Expand palette"
     },
+    "Studio": {
+      "Opacity": "Opacity",
+      "Blend": "Blend mode",
+      "Angle": "Nib angle",
+      "AngleMode": "Angle mode",
+      "Aspect": "Flatness",
+      "Corner": "Corner radius",
+      "Hardness": "Hardness",
+      "Flow": "Flow",
+      "Spacing": "Spacing",
+      "Scatter": "Scatter",
+      "Grain": "Paper grain",
+      "Reset": "Reset",
+      "SavePreset": "Save preset",
+      "PresetName": "Preset name:",
+      "Presets": "Custom presets",
+      "Export": "Export presets JSON",
+      "ExportPrompt": "Copy presets JSON:",
+      "Import": "Import presets JSON",
+      "ImportPrompt": "Paste presets JSON:"
+    },
+    "Aids": {
+      "Stabilizer": "Stabilizer",
+      "Strength": "Strength",
+      "Symmetry": "Symmetry",
+      "Snap": "Smart assists",
+      "QuickShape": "QuickShape (hold)",
+      "GridSnap": "Grid snap"
+    },
+    "Select": {
+      "Scale": "Drag to scale",
+      "Rotate": "Drag to rotate (Shift: 15°)",
+      "Duplicate": "Duplicate (Ctrl+D)",
+      "Recolor": "Apply current colour",
+      "Delete": "Delete"
+    },
     "Color": {
       "Player": "Player colour",
       "Recent": "Recent",
-      "Custom": "Custom colour"
+      "Custom": "Custom colour",
+      "Swap": "Swap foreground / secondary colour (Shift+X)"
     },
     "Size": {
       "HintGrid": "Map sizes are relative to the grid: they look the same on every scene.",
@@ -169,7 +255,8 @@
       "SaveTimeout": "The annotation could not be saved (the GM did not respond in time).",
       "MaskLimit": "Some marks have been partially erased too many times; erase them whole instead.",
       "NothingToUndo": "Nothing to undo.",
-      "NothingToRedo": "Nothing to redo."
+      "NothingToRedo": "Nothing to redo.",
+      "ColorPicked": "Picked colour {color}."
     },
     "Settings": {
       "PermScreen": {
@@ -257,6 +344,21 @@
       },
       "SizeUp": {
         "Name": "Larger brush"
+      },
+      "AngleLeft": {
+        "Name": "Rotate brush nib left"
+      },
+      "AngleRight": {
+        "Name": "Rotate brush nib right"
+      },
+      "Eyedropper": {
+        "Name": "Eyedropper colour sampler"
+      },
+      "SwapColors": {
+        "Name": "Swap foreground & secondary colour"
+      },
+      "Duplicate": {
+        "Name": "Duplicate selected scribble"
       },
       "Cancel": {
         "Name": "Cancel current stroke",
