@@ -14,6 +14,8 @@ class Raster {
   restore(): void {}
   setTransform(): void {}
   drawImage(): void {}
+  fillText(): void {}
+  strokeText(): void {}
   clearRect(): void {
     this.cells.clear();
   }
@@ -192,5 +194,63 @@ it("keeps a saved blend on the scene, with earlier cached strokes below it and l
   for (let i = 0; i < 10; i++) frame();
   assert.deepEqual(paintOrder(), [], "ordinary strokes return to the tile cache when the blend is gone");
   assert.ok(tiles.children.some((c) => c.visible));
+  renderer.destroy();
+});
+
+it("hides an edited item from saved tiles and temporary sprites without mutating canonical data", (t) => {
+  installRendererStubs(t);
+  const viewport = { left: 0, top: 0, width: 500, height: 500 };
+  const space = new MapSpace(
+    { sceneX: 0, sceneY: 0, sceneWidth: 500, sceneHeight: 500, refW: 500, refH: 500, gridSize: 100 },
+    { zoom: () => 1, toCanvas: (x, y) => ({ x, y }), toClient: (x, y) => ({ x, y }) },
+  );
+  let frame: () => void = () => undefined;
+  const top = new Container();
+  const store = new ItemStore();
+  const renderer = new SceneRenderer(
+    {
+      store,
+      shows: () => true,
+      viewport: () => viewport,
+      map: () => space,
+      screen: () => new ScreenSpace(viewport),
+      layerOf: () => "top",
+      resolution: () => 1,
+      now: () => 1_000_100,
+    },
+    {
+      top,
+      primary: new Container(),
+      overlay: new Container(),
+      ticker: { add: (tick: () => void) => (frame = tick), remove() {} },
+    } as unknown as RenderTargets,
+  );
+  const item = makeItem({ kind: "text", tool: "text", text: "original", points: [25, 25, 0.5], expiresAt: null });
+  const [tiles, sprites] = top.children[0]!.children as [Container, Container];
+  store.put(item, "stored");
+  frame();
+  assert.ok(tiles.children.some((c) => c.visible));
+  renderer.setEditingText(item.id);
+  frame();
+  assert.ok(tiles.children.every((c) => !c.visible));
+  assert.equal(store.get(item.id)?.item, item);
+  const changed = { ...item, text: "remote", revision: 1 };
+  store.put(changed, "stored");
+  renderer.refresh();
+  frame();
+  assert.ok(tiles.children.every((c) => !c.visible));
+  renderer.setEditingText(null);
+  frame();
+  assert.ok(tiles.children.some((c) => c.visible));
+  assert.equal(store.get(item.id)?.item.text, "remote");
+  store.put({ ...changed, expiresAt: 1_060_000 }, "temp");
+  frame();
+  assert.equal(sprites.children.length, 1);
+  renderer.setEditingText(item.id);
+  frame();
+  assert.equal(sprites.children.length, 0);
+  renderer.setEditingText(null);
+  frame();
+  assert.equal(sprites.children.length, 1);
   renderer.destroy();
 });

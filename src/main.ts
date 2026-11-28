@@ -1,4 +1,5 @@
 import { LAYER_NAME, MODULE_ID } from "./constants.ts";
+import { clearTextLayoutCache } from "./core/text-layout.ts";
 import { registerKeybindings } from "./foundry/keybindings.ts";
 import { defineLayer, syncControlTool } from "./foundry/layer.ts";
 import * as settings from "./foundry/settings.ts";
@@ -111,6 +112,7 @@ Hooks.once("setup", () => {
   a.input = new PointerInput(session, () => (canvas?.app?.view as HTMLElement | undefined) ?? null, boardEnabled);
   a.input.onPointer = (cx, cy, over, type) => a.cursor.update(cx, cy, over, type);
   session.onTextRequest = (req) => a.text.open(req);
+  session.onTextEditingChange = (id) => a.renderer?.setEditingText(id);
   session.onRefresh = () => a.renderer?.refresh();
   session.onChange(() => {
     a.cursor.refresh();
@@ -127,6 +129,14 @@ Hooks.once("setup", () => {
     refreshUI();
   });
   app = a;
+  const fontsChanged = () => {
+    clearTextLayoutCache();
+    session.store.refreshTextBounds();
+    a.text.refresh();
+    a.guides.refresh();
+  };
+  void document.fonts.ready.then(fontsChanged);
+  document.fonts.addEventListener("loadingdone", fontsChanged);
   a.debug.show(settings.debugEnabled());
 
   const module = game.modules.get(MODULE_ID);
@@ -182,6 +192,7 @@ Hooks.on("updateScene", (scene: FoundryScene, changes: Record<string, unknown>) 
 Hooks.on("canvasPan", () => {
   app?.cursor.refresh();
   app?.guides.refresh();
+  app?.text.refresh();
 });
 Hooks.on("userConnected", (user: FoundryUser, connected: boolean) => {
   if (!connected) app?.session.onUserGone(user.id);
@@ -195,6 +206,7 @@ window.addEventListener("resize", () => {
   app.session.updateViewport();
   app.cursor.refresh();
   app.guides.refresh();
+  app.text.refresh();
 });
 
 /* -------------------------------------------- */

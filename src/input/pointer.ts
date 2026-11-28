@@ -35,6 +35,30 @@ export class PointerInput {
       ["pointermove", (e) => this.#move(e as PointerEvent), { capture: true }],
       ["pointerup", (e) => this.#up(e as PointerEvent), { capture: true }],
       ["pointercancel", (e) => this.#cancel(e as PointerEvent), { capture: true }],
+      [
+        "dblclick",
+        (e) => {
+          const event = e as MouseEvent;
+          if (
+            !this.#onBoard(event) ||
+            !this.#enabled() ||
+            event.button !== 0 ||
+            this.#session.effective().tool !== "select"
+          )
+            return;
+          if (
+            this.#session.editTextAt({
+              cx: event.clientX,
+              cy: event.clientY,
+              time: event.timeStamp,
+              pressure: 0.5,
+              pointerType: "mouse",
+            })
+          )
+            this.#swallow(event);
+        },
+        { capture: true },
+      ],
       ["wheel", (e) => this.#wheel(e as WheelEvent), { capture: true, passive: false }],
       ["contextmenu", (e) => this.#context(e as MouseEvent), { capture: true }],
       ["blur", () => this.#abort(), {}],

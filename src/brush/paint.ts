@@ -1,4 +1,5 @@
 import { resample } from "../core/geometry.ts";
+import { layoutText, textFont } from "../core/text-layout.ts";
 import type { BlendMode, BrushId, ScribbleItem } from "../core/types.ts";
 import { clamp, hashString, luminance, rng } from "../core/util.ts";
 import { BRUSHES, resolveBrushParams } from "./brushes.ts";
@@ -993,24 +994,20 @@ function paintArea(ctx: Ctx2D, item: ScribbleItem, view: View): void {
   ctx.globalAlpha = 1;
 }
 
-export const TEXT_FONT = `"Signika", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif`;
-export const TEXT_LINE_HEIGHT = 1.25;
-
 function paintText(ctx: Ctx2D, item: ScribbleItem): void {
   const size = item.size;
   const x = item.points[0]!;
   const y = item.points[1]!;
-  ctx.font = `600 ${size}px ${TEXT_FONT}`;
-  ctx.textBaseline = "top";
+  ctx.font = textFont(size);
+  ctx.textBaseline = "alphabetic";
   ctx.lineJoin = "round";
-  const lines = (item.text ?? "").split("\n");
-  lines.forEach((line, i) => {
-    const ly = y + i * size * TEXT_LINE_HEIGHT;
+  layoutText(item).lines.forEach((line) => {
+    const ly = y + line.baseline;
     ctx.lineWidth = size * 0.18;
     ctx.strokeStyle = haloColor(item.color);
-    ctx.strokeText(line, x, ly);
+    ctx.strokeText(line.text, x, ly);
     ctx.fillStyle = item.color;
-    ctx.fillText(line, x, ly);
+    ctx.fillText(line.text, x, ly);
   });
 }
 

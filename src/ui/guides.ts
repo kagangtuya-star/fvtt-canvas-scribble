@@ -1,4 +1,5 @@
 import { t } from "../i18n.ts";
+import { layoutText } from "../core/text-layout.ts";
 import type { Session } from "../session.ts";
 import { h, iconButton, themeClass } from "./dom.ts";
 
@@ -21,9 +22,10 @@ export class GuidesOverlay {
     this.#session = session;
     this.#svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     this.#svg.setAttribute("class", "cs-sym-svg");
+    this.#svg.setAttribute("aria-hidden", "true");
     this.#selBox = h("div", { class: `cs-select-box themed ${themeClass()}` });
     this.#selBox.hidden = true;
-    this.element = h("div", { id: "canvas-scribble-guides", "aria-hidden": "true" }, this.#svg, this.#selBox);
+    this.element = h("div", { id: "canvas-scribble-guides" }, this.#svg, this.#selBox);
     this.element.hidden = true;
     document.body.append(this.element);
     this.#off = session.onChange(() => this.refresh());
@@ -91,7 +93,7 @@ export class GuidesOverlay {
 
   #renderSelection(entry: ReturnType<Session["selectedEntry"]>): void {
     const box = this.#selBox;
-    if (!entry) {
+    if (!entry || this.#session.editingTextId === entry.item.id) {
       box.hidden = true;
       return;
     }
@@ -101,7 +103,14 @@ export class GuidesOverlay {
       box.hidden = true;
       return;
     }
-    const [x0, y0, x1, y1] = entry.bounds;
+    let [x0, y0, x1, y1] = entry.bounds;
+    if (entry.item.kind === "text") {
+      const layout = layoutText(entry.item);
+      x0 = entry.item.points[0]!;
+      y0 = entry.item.points[1]!;
+      x1 = x0 + layout.width;
+      y1 = y0 + layout.height;
+    }
     const p0 = space.toClient(x0, y0, entry.item.anchor);
     const p1 = space.toClient(x1, y1, entry.item.anchor);
     const left = Math.min(p0.x, p1.x);
@@ -116,28 +125,41 @@ export class GuidesOverlay {
     box.style.height = `${Math.round(hgt)}px`;
 
     box.replaceChildren();
-    const bindHandle = (el: HTMLElement, mode: "scale" | "rotate") => {
+    const bindHandle = (el: HTMLElement, mode: "scale" | "rotate" | "width-left" | "width-right") => {
       el.addEventListener("pointerdown", (e) => {
         if (e.button !== 0) return;
         e.preventDefault();
         e.stopPropagation();
         if (!s.startTransformHandle(mode, e.clientX, e.clientY)) return;
+        const pointerId = e.pointerId;
         const move = (ev: PointerEvent) => {
+          if (ev.pointerId !== pointerId) return;
           s.pointerMove(
             [{ cx: ev.clientX, cy: ev.clientY, time: ev.timeStamp, pressure: 0.5, pointerType: ev.pointerType }],
             { shift: ev.shiftKey, alt: ev.altKey },
           );
         };
         const up = (ev: PointerEvent) => {
+          if (ev.pointerId !== pointerId) return;
           window.removeEventListener("pointermove", move, true);
           window.removeEventListener("pointerup", up, true);
+          window.removeEventListener("pointercancel", cancel, true);
           s.pointerUp(
             { cx: ev.clientX, cy: ev.clientY, time: ev.timeStamp, pressure: 0.5, pointerType: ev.pointerType },
             { shift: ev.shiftKey, alt: ev.altKey },
           );
         };
+        const cancel = (ev: PointerEvent) => {
+          if (ev.pointerId !== pointerId) return;
+          window.removeEventListener("pointermove", move, true);
+          window.removeEventListener("pointerup", up, true);
+          window.removeEventListener("pointercancel", cancel, true);
+          s.cancelGesture();
+          s.changed();
+        };
         window.addEventListener("pointermove", move, true);
         window.addEventListener("pointerup", up, true);
+        window.addEventListener("pointercancel", cancel, true);
       });
     };
 
@@ -146,9 +168,17 @@ export class GuidesOverlay {
       bindHandle(handle, "scale");
       box.append(handle);
     }
-    const rot = h("div", { class: "cs-handle cs-handle-rot", "data-tooltip": t("Select.Rotate") });
-    bindHandle(rot, "rotate");
-    box.append(rot);
+    if (entry.item.kind === "text") {
+      for (const side of ["left", "right"] as const) {
+        const handle = h("div", { class: `cs-handle cs-handle-${side}`, "data-tooltip": t("Text.Resize") });
+        bindHandle(handle, `width-${side}`);
+        box.append(handle);
+      }
+    } else {
+      const rot = h("div", { class: "cs-handle cs-handle-rot", "data-tooltip": t("Select.Rotate") });
+      bindHandle(rot, "rotate");
+      box.append(rot);
+    }
 
     const actions = h(
       "div",
@@ -157,6 +187,14 @@ export class GuidesOverlay {
       iconButton("fa-solid fa-fill-drip", t("Select.Recolor"), () => s.recolorSelected(s.color())),
       iconButton("fa-solid fa-trash", t("Select.Delete"), () => s.deleteSelected()),
     );
+    if (entry.item.kind === "text") {
+      actions.prepend(
+        iconButton("fa-solid fa-pen-to-square", t("Text.Edit"), () => s.editText()),
+        iconButton("fa-solid fa-arrows-left-right", t("Text.AutoWidth"), () => s.resetTextWidth(), {
+          disabled: entry.item.textWidth === undefined,
+        }),
+      );
+    }
     box.append(actions);
   }
 

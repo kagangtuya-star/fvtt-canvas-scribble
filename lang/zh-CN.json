@@ -210,7 +210,14 @@
       "Eraser": "橡皮擦"
     },
     "Text": {
-      "Placeholder": "输入文字…（回车放置）"
+      "Placeholder": "输入文字…",
+      "Hint": "回车换行 · Ctrl/Cmd+Enter 完成 · Esc 取消",
+      "Edit": "编辑文字（双击）",
+      "Resize": "拖动调整文本宽度并自动换行",
+      "AutoWidth": "恢复文本自动宽度",
+      "Done": "完成（Ctrl/Cmd+Enter）",
+      "Cancel": "取消（Esc）",
+      "Conflict": "文字已被修改、过期、删除或不再允许编辑。草稿已保留，请复制后再取消编辑。"
     },
     "Clear": {
       "Title": "清除涂鸦",

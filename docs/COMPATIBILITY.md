@@ -16,7 +16,8 @@ The API names and shapes the module relies on were checked against the community
 
 | Area | Status |
 |---|---|
-| Unit tests (codec, validation, permissions, store, history, spaces, protocol, rate limits, persistence, prefs, tiles, hit tests, brushes) | **Tested** — `npm test`, 89 tests |
+| Unit tests (codec, validation, permissions, store, history, spaces, protocol, rate limits, persistence, prefs, tiles, hit tests, brushes, text layout/editing) | **Tested** — `npm test`, 134 tests |
+| Text: automatic width, newlines, re-edit/cancel, drag/width handles, IME composition guard, editor/painter wrapping, map pan/zoom, permanent edit/reload, stale draft protection | **Tested in a standalone Chromium fixture** using the real Session, editor, pointer input, guides and Canvas painters; this does not validate full harness/Foundry integration |
 | Module boot, layer registration, scene controls, palette, popovers, dialogs | **Tested in harness** (v13 and v14 mode) |
 | Drawing on map and screen, every tool, hold keys, Tab / Esc / Enter / Ctrl+Z / Ctrl+Y / `[` `]` | **Tested in harness** (keys through a simulated keybinding dispatcher) |
 | Multiplayer: live streaming, late-join sync, GM relay of permanent marks, undo / redo across clients, clears | **Tested in harness** (three users in three tabs, `BroadcastChannel` as the server) |

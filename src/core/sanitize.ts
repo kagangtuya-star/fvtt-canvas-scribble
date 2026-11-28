@@ -1,6 +1,7 @@
 import { LIMITS } from "../constants.ts";
 import { decodeAngles, decodePoints, encodeAngles, encodePoints } from "./codec.ts";
 import type { ZKind } from "./codec.ts";
+import { cleanText } from "./text-layout.ts";
 import { ANGLE_MODES, BLEND_MODES, BRUSH_IDS, FILL_PATTERNS, MAP_LAYERS, SCHEMA_VERSION, SHAPE_IDS } from "./types.ts";
 import type {
   AngleMode,
@@ -237,9 +238,11 @@ export function sanitizeItem(raw: unknown, ctx: SanitizeContext): ScribbleItem |
   if (kind === "text") {
     if (typeof r.text !== "string") return null;
     // Plain text only: strip control characters except newlines; rendered with fillText, never as HTML.
-    const text = r.text.replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, "").slice(0, LIMITS.maxTextLength);
+    const text = cleanText(r.text);
     if (!text.trim()) return null;
     item.text = text;
+    const width = optNum(r.textWidth, 1, mode === "screen" ? 4000 : 100_000);
+    if (width !== undefined) item.textWidth = width;
   }
   if (mode === "screen") {
     const a = Array.isArray(r.anchor) ? r.anchor : [0, 0];

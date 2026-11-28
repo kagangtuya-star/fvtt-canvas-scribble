@@ -14,6 +14,7 @@ import { MapSpace, ScreenSpace } from "./core/space.ts";
 import type { SpaceAdapter, Viewport } from "./core/space.ts";
 import { ItemStore } from "./core/store.ts";
 import type { Entry } from "./core/store.ts";
+import { cleanText, layoutText } from "./core/text-layout.ts";
 import { SCHEMA_VERSION } from "./core/types.ts";
 import type { BrushId, EraseMask, Kind, MapLayer, Mode, ScribbleItem, WireItem } from "./core/types.ts";
 import { randomId } from "./core/util.ts";
@@ -51,6 +52,9 @@ export interface TextRequest {
   cy: number;
   size: number;
   color: string;
+  scene: string;
+  point: { x: number; y: number };
+  original?: ScribbleItem;
 }
 
 type Level = "info" | "warn" | "error";
@@ -92,9 +96,11 @@ export class Session implements ToolHost, RenderHost {
   #stash: { scene: string; items: ScribbleItem[] } | null = null;
   /** Currently selected item id (Select & Transform tool). */
   selectedId: string | null = null;
+  editingTextId: string | null = null;
+  onTextEditingChange: ((id: string | null) => void) | null = null;
   #selectDrag: {
     id: string;
-    mode: "move" | "scale" | "rotate";
+    mode: "move" | "scale" | "rotate" | "width-left" | "width-right";
     original: ScribbleItem;
     origin: { x: number; y: number };
     center: { x: number; y: number };
@@ -200,6 +206,8 @@ export class Session implements ToolHost, RenderHost {
       this.#stash = { scene: this.scene.id, items };
     }
     this.cancelGesture();
+    this.setEditingText(null);
+    this.selectedId = null;
     this.#live.clear();
     for (const timer of this.#pendingTimers.values()) clearTimeout(timer);
     this.#pendingTimers.clear();
@@ -661,8 +669,11 @@ export class Session implements ToolHost, RenderHost {
         this.#gesture = new LaserGesture(this, target, p.sizes.laser, s);
         break;
       case "text": {
+        const hit = this.#selectHit(s);
+        if (hit?.item.kind === "text") return this.editText(hit.item.id);
         const size = target.space.widthFor(p.sizes.text);
-        this.onTextRequest?.({ target, cx: s.cx, cy: s.cy, size, color: this.color() });
+        const point = target.space.fromClient(s.cx, s.cy, target.anchor);
+        this.onTextRequest?.({ target, cx: s.cx, cy: s.cy, size, color: this.color(), point, scene: this.scene!.id });
         return true;
       }
       case "eraser":
@@ -745,9 +756,11 @@ export class Session implements ToolHost, RenderHost {
   }
 
   /** Start a scale or rotate drag from a selection handle (called by SelectionOverlay). */
-  startTransformHandle(mode: "scale" | "rotate", cx: number, cy: number): boolean {
+  startTransformHandle(mode: "scale" | "rotate" | "width-left" | "width-right", cx: number, cy: number): boolean {
     const entry = this.selectedEntry();
-    if (!entry) return false;
+    if (!entry || !this.#modifiable(entry)) return false;
+    if (mode === "rotate" && entry.item.kind === "text") return false;
+    if (mode.startsWith("width-") && entry.item.kind !== "text") return false;
     const space = this.space(entry.item.mode);
     if (!space) return false;
     const target: Target = { mode: entry.item.mode, space, anchor: entry.item.anchor };
@@ -768,16 +781,24 @@ export class Session implements ToolHost, RenderHost {
     return true;
   }
 
-  #selectDown(s: ClientSample): boolean {
-    const me = game.user;
-    const th = settings.thresholds();
+  #modifiable(entry: Entry): boolean {
+    return (
+      entry.state !== "live" &&
+      entry.state !== "pending" &&
+      this.shows(entry.item) &&
+      (this.can(entry.item.mode) || this.can("manage")) &&
+      (entry.item.expiresAt === null || this.now() < goneAt(entry.item)) &&
+      mayModify(game.user.id, game.user.role, entry.item.author, settings.thresholds())
+    );
+  }
+
+  #selectHit(s: ClientSample): Entry | null {
     const list = this.store.ordered();
     let hit: Entry | null = null;
     for (let i = list.length - 1; i >= 0; i--) {
       const e = list[i]!;
       const it = e.item;
-      if (it.kind === "laser" || e.state === "live" || e.state === "pending") continue;
-      if (!this.shows(it) || !mayModify(me.id, me.role, it.author, th)) continue;
+      if (it.kind === "laser" || !this.#modifiable(e)) continue;
       const space = this.space(it.mode);
       if (!space) continue;
       const p = space.fromClient(s.cx, s.cy, it.anchor);
@@ -787,6 +808,11 @@ export class Session implements ToolHost, RenderHost {
         break;
       }
     }
+    return hit;
+  }
+
+  #selectDown(s: ClientSample): boolean {
+    const hit = this.#selectHit(s);
     this.selectedId = hit ? hit.item.id : null;
     this.changed();
     if (!hit) return false;
@@ -825,6 +851,16 @@ export class Session implements ToolHost, RenderHost {
       const dist = Math.max(1, Math.hypot(p.x - d.center.x, p.y - d.center.y));
       const f = Math.max(0.15, Math.min(8, dist / d.startDist));
       next = scaleItem(d.original, d.center.x, d.center.y, f, f);
+    } else if (d.mode === "width-left" || d.mode === "width-right") {
+      const dx = p.x - d.origin.x;
+      if (!d.moved && Math.abs(dx) < 1.5 / d.target.space.cssPerUnit()) return;
+      d.moved = true;
+      const oldWidth = layoutText(d.original).width;
+      const max = d.original.mode === "screen" ? 4000 : 100_000;
+      const width = Math.max(1, Math.min(max, oldWidth + (d.mode === "width-left" ? -dx : dx)));
+      next = d.mode === "width-left" ? translateItem(d.original, oldWidth - width, 0) : { ...d.original };
+      next.textWidth = width;
+      next.revision = d.original.revision + 1;
     } else {
       d.moved = true;
       let rad = Math.atan2(p.y - d.center.y, p.x - d.center.x) - d.startAngle;
@@ -842,9 +878,14 @@ export class Session implements ToolHost, RenderHost {
     this.#selectMove(s, mods);
     this.#selectDrag = null;
     if (!d.moved) return;
-    const cur = this.store.get(d.id)?.item;
-    if (!cur) return;
-    this.#replaceItems([cur]);
+    const entry = this.store.get(d.id);
+    if (!entry) return;
+    const cur = entry.item;
+    if (!this.#modifiable(entry) || !this.#replaceItems([cur])) {
+      this.store.put(d.original, entry.state);
+      this.changed();
+      return;
+    }
     this.history.record({ type: "update", before: [d.original], after: [cur] });
     this.changed();
   }
@@ -889,13 +930,113 @@ export class Session implements ToolHost, RenderHost {
   }
 
   /** Commit a text item from the text editor. */
-  commitText(req: TextRequest, text: string): void {
-    const clean = text.replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, "").slice(0, LIMITS.maxTextLength);
-    if (!clean.trim()) return;
-    const p = req.target.space.fromClient(req.cx, req.cy, req.target.anchor);
+  commitText(req: TextRequest, text: string, textWidth?: number): boolean {
+    if (this.scene?.id !== req.scene) return false;
+    const clean = cleanText(text);
+    const width =
+      typeof textWidth === "number" && Number.isFinite(textWidth)
+        ? Math.max(1, Math.min(req.target.mode === "screen" ? 4000 : 100_000, textWidth))
+        : undefined;
+    if (req.original) {
+      const entry = this.store.get(req.original.id);
+      if (
+        !entry ||
+        !this.#modifiable(entry) ||
+        entry.item.revision !== req.original.revision ||
+        entry.item.text !== req.original.text ||
+        entry.item.textWidth !== req.original.textWidth
+      ) {
+        this.notify("warn", "Text.Conflict");
+        return false;
+      }
+      const before = entry.item;
+      if (clean === before.text && width === before.textWidth) return true;
+      if (before.expiresAt === null && !activeGM()) {
+        this.notify("warn", "Notify.NoGM");
+        return false;
+      }
+      if (!clean.trim()) {
+        this.#removeItems([before]);
+        this.history.record({ type: "delete", items: [before] });
+        this.selectedId = null;
+      } else {
+        const after = { ...before, text: clean, revision: before.revision + 1 };
+        if (width === undefined) delete after.textWidth;
+        else after.textWidth = width;
+        if (!this.#replaceItems([after])) return false;
+        this.history.record({ type: "update", before: [before], after: [after] });
+      }
+      this.changed();
+      return true;
+    }
+    if (!clean.trim()) return true;
+    if (!this.can(req.target.mode)) {
+      this.notify("warn", req.target.mode === "map" ? "Notify.NoMapPermission" : "Notify.NoScreenPermission");
+      return false;
+    }
+    const p = req.point;
     const item = this.makeItem(req.target, "text", "text", req.size, [p.x, p.y, 0.5], { text: clean, style: {} });
+    item.color = req.color;
+    if (width !== undefined) item.textWidth = width;
     if (this.prefs.halo) item.style.halo = true;
     this.commit(item);
+    if (!this.store.has(item.id)) return false;
+    this.selectedId = item.id;
+    this.changed();
+    return true;
+  }
+
+  setEditingText(id: string | null): void {
+    this.editingTextId = id;
+    this.onTextEditingChange?.(id);
+    this.changed();
+  }
+
+  editText(id: string | null = this.selectedId): boolean {
+    if (!id) return false;
+    const entry = this.store.get(id);
+    if (!entry || entry.item.kind !== "text" || !this.#modifiable(entry)) return false;
+    const item = entry.item;
+    const space = this.space(item.mode);
+    if (!space || !this.onTextRequest) return false;
+    this.cancelGesture();
+    this.selectedId = id;
+    const point = { x: item.points[0]!, y: item.points[1]! };
+    const pos = space.toClient(point.x, point.y, item.anchor);
+    this.onTextRequest({
+      target: { mode: item.mode, space, anchor: item.anchor },
+      cx: pos.x,
+      cy: pos.y,
+      size: item.size,
+      color: item.color,
+      scene: item.scene,
+      point,
+      original: item,
+    });
+    return true;
+  }
+
+  editTextAt(s: ClientSample): boolean {
+    const hit = this.#selectHit(s);
+    return hit?.item.kind === "text" ? this.editText(hit.item.id) : false;
+  }
+
+  resetTextWidth(): boolean {
+    const entry = this.selectedEntry();
+    if (!entry || entry.item.kind !== "text" || !this.#modifiable(entry)) return false;
+    return this.commitText(
+      {
+        target: { mode: entry.item.mode, space: this.space(entry.item.mode)!, anchor: entry.item.anchor },
+        cx: 0,
+        cy: 0,
+        size: entry.item.size,
+        color: entry.item.color,
+        scene: entry.item.scene,
+        point: { x: entry.item.points[0]!, y: entry.item.points[1]! },
+        original: entry.item,
+      },
+      entry.item.text ?? "",
+    );
   }
 
   /* -------------------------------------------- */
@@ -1050,14 +1191,16 @@ export class Session implements ToolHost, RenderHost {
   }
 
   /** Replace items everywhere (erase masks, undo/redo of an update). */
-  #replaceItems(items: ScribbleItem[]): void {
-    if (!this.scene) return;
+  #replaceItems(items: ScribbleItem[]): boolean {
+    if (!this.scene) return false;
+    let success = true;
     for (const item of items) {
       const entry = this.store.get(item.id);
       if (item.expiresAt === null) {
         if (this.isRelay) {
           const refusal = this.writer.write(this.scene, item);
           if (refusal) {
+            success = false;
             this.notify("warn", "Notify.Budget");
             if (entry) this.store.put(entry.item, entry.state);
             continue;
@@ -1070,6 +1213,7 @@ export class Session implements ToolHost, RenderHost {
         this.net.send({ t: "u", item: toWire(item) });
       }
     }
+    return success;
   }
 
   /** Re-create items with their original ids (undo of delete, redo of create). */

@@ -203,6 +203,7 @@ export class SceneRenderer {
   #lastSweep = 0;
   #hidden = false;
   #destroyed = false;
+  #editingTextId: string | null = null;
   #groundElevation = NaN;
   /** Called after each frame (debug overlay). */
   onFrame: ((info: { tier: number; ms: number }) => void) | null = null;
@@ -249,6 +250,17 @@ export class SceneRenderer {
     for (const entry of this.#host.store.values()) this.#route(entry);
   }
 
+  /** Exclude the locally edited item from sprites AND flattened cache tiles. */
+  setEditingText(id: string | null): void {
+    const before = this.#editingTextId;
+    this.#editingTextId = id;
+    if (before && before !== id) {
+      const entry = this.#host.store.get(before);
+      if (entry) this.#route(entry);
+    }
+    if (id) this.#unroute(id);
+  }
+
   *#roots(): Generator<Root> {
     yield* Object.values(this.#map);
     yield* this.#screen.values();
@@ -288,7 +300,7 @@ export class SceneRenderer {
 
   #route(entry: Entry): void {
     const id = entry.item.id;
-    if (!this.#host.shows(entry.item)) {
+    if (id === this.#editingTextId || !this.#host.shows(entry.item)) {
       this.#unroute(id);
       return;
     }

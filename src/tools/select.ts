@@ -52,6 +52,7 @@ export function scaleItem(item: ScribbleItem, cx: number, cy: number, sx: number
     points: scalePts(item.points),
     revision: item.revision + 1,
   };
+  if (item.kind === "text" && item.textWidth !== undefined) next.textWidth = item.textWidth * (next.size / item.size);
   if (erase) next.erase = erase;
   return next;
 }

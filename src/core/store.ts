@@ -3,6 +3,7 @@ import { LIMITS } from "../constants.ts";
 import { boundsOf } from "./geometry.ts";
 import type { Bounds } from "./geometry.ts";
 import { goneAt } from "./lifetime.ts";
+import { layoutText } from "./text-layout.ts";
 import type { BrushId, ScribbleItem } from "./types.ts";
 
 /**
@@ -50,12 +51,9 @@ export function itemBounds(item: ScribbleItem): Bounds {
   if (item.style.head && item.style.head !== "none") pad += item.size * 5;
   if (item.style.brush?.rgh) pad += item.size * (item.style.brush.rgh + 1);
   if (item.kind === "text") {
-    const lines = (item.text ?? "").split("\n");
-    const longest = Math.max(...lines.map((l) => l.length), 1);
     const [x, y] = [item.points[0] ?? 0, item.points[1] ?? 0];
-    const w = longest * item.size * 0.62 + item.size;
-    const h = lines.length * item.size * 1.25 + item.size * 0.5;
-    return [x - item.size * 0.3, y - item.size * 0.3, x + w, y + h];
+    const b = layoutText(item).bounds;
+    return [x + b[0], y + b[1], x + b[2], y + b[3]];
   }
   return boundsOf(item.points, pad);
 }
@@ -89,6 +87,13 @@ export class ItemStore {
 
   has(id: string): boolean {
     return this.#entries.has(id);
+  }
+
+  /** Font loading changes derived bounds without changing the canonical items. */
+  refreshTextBounds(): void {
+    for (const entry of this.#entries.values()) {
+      if (entry.item.kind === "text") this.put(entry.item, entry.state);
+    }
   }
 
   values(): IterableIterator<Entry> {

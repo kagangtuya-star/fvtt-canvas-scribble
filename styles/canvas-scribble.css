@@ -506,24 +506,78 @@ body.canvas-scribble-cursor #board {
   cursor: none !important;
 }
 
-.cs-text-input {
+.cs-text-editor {
   position: fixed;
   z-index: 95;
-  min-width: 40px;
+  outline: 1px dashed color-mix(in srgb, var(--cs-color) 70%, transparent);
+  outline-offset: 3px;
+}
+.cs-text-viewport {
+  overflow: auto;
+}
+.cs-text-surface {
+  position: relative;
+  overflow: hidden;
+}
+.cs-text-input {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: top left;
+  display: block;
+  box-sizing: content-box;
+  min-width: 0;
+  max-width: none;
+  min-height: 0;
+  max-height: none;
   margin: 0;
   padding: 0;
   border: none;
-  outline: 1px dashed color-mix(in srgb, var(--cs-color) 70%, transparent);
-  outline-offset: 3px;
+  outline: none;
   background: transparent;
   resize: none;
   overflow: hidden;
   white-space: pre;
+  word-break: break-all;
+  line-break: anywhere;
+  overflow-wrap: anywhere;
+  letter-spacing: normal;
+  text-transform: none;
+  text-indent: 0;
   caret-color: var(--cs-color);
   text-shadow:
     0 0 2px rgba(0, 0, 0, 0.6),
     0 0 1px rgba(0, 0, 0, 0.8);
   box-shadow: none;
+}
+.cs-text-input:focus {
+  box-shadow: none;
+  outline: none;
+}
+.cs-text-resize {
+  position: absolute;
+  right: -7px;
+  top: calc(50% - 10px);
+  width: 7px;
+  height: 20px;
+  background: var(--cs-color);
+  border-radius: 2px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.cs-text-actions {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  display: flex;
+  gap: 3px;
+  padding: 2px;
+  border-radius: 5px;
+  background: var(--color-cool-5-90, rgba(11, 10, 19, 0.9));
+}
+.cs-text-actions .cs-btn {
+  width: 26px;
+  height: 26px;
 }
 .cs-text-input::placeholder {
   color: color-mix(in srgb, var(--cs-color) 55%, transparent);
@@ -765,6 +819,18 @@ body.canvas-scribble-cursor #board {
   border: 1.5px solid var(--color-warm-2, #c9593f);
   pointer-events: all;
   cursor: nwse-resize;
+  touch-action: none;
+}
+.cs-handle-left,
+.cs-handle-right {
+  top: calc(50% - 5px);
+  cursor: ew-resize;
+}
+.cs-handle-left {
+  left: -6px;
+}
+.cs-handle-right {
+  right: -6px;
 }
 .cs-handle-nw {
   left: -6px;

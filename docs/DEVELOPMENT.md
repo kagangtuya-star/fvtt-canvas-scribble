@@ -73,6 +73,14 @@ flags, optional text, `createdAt` / `expiresAt` (server time; `expiresAt: null` 
   encoded and base64'd (`src/core/codec.ts`), about 4 characters per point.
 - `sanitizeItem` validates every untrusted item (schema version, ids, scene, enums, colours, ranges, extents, clock skew,
   lifetime, text control characters, mask count) and always sets `author` from the authenticated sender.
+- Text keeps its original string (including explicit newlines). Optional `textWidth` is a wrapping width in space
+  units; absent means natural width, preserving compatibility with existing schema-1 items. `core/text-layout.ts`
+  shares font metrics, line layout and padded bounds between the painter, editor and hit tests. Font loading
+  invalidates these derived caches. Width changes do not change the font size; uniform scaling changes both.
+- The native textarea edits a local draft. Existing items keep their ids, authors and lifetimes; commits use one
+  history `update` and the existing `u` message/GM writer. Unchanged drafts do nothing, Escape cancels, and clearing
+  an existing text is an undoable delete. Stale/deleted/expired or unauthorized drafts are refused locally and kept
+  for copying. The renderer excludes the edited id from both sprites and tiles until editing ends.
 
 ## Network
 

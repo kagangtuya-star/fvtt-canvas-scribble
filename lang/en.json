@@ -210,7 +210,14 @@
       "Eraser": "Eraser"
     },
     "Text": {
-      "Placeholder": "Type… (Enter to place)"
+      "Placeholder": "Type…",
+      "Hint": "Enter: new line · Ctrl/Cmd+Enter: done · Esc: cancel",
+      "Edit": "Edit text (double-click)",
+      "Resize": "Drag to set text width and wrap lines",
+      "AutoWidth": "Restore automatic text width",
+      "Done": "Done (Ctrl/Cmd+Enter)",
+      "Cancel": "Cancel (Esc)",
+      "Conflict": "This text changed, expired, was deleted, or is no longer editable. Your draft is kept; copy it before cancelling."
     },
     "Clear": {
       "Title": "Clear scribbles",

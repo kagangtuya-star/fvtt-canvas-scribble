@@ -168,6 +168,8 @@ export interface ScribbleItem {
   angles?: number[];
   style: ItemStyle;
   text?: string;
+  /** Text wrapping width in space units; absent = natural width and explicit newlines only. */
+  textWidth?: number;
   /** Server time (ms) at which the item was completed. */
   createdAt: number;
   /** Server time (ms) at which fading begins; `null` = permanent. */

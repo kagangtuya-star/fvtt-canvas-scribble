@@ -20,7 +20,7 @@ Freehand drawing, annotations, and a laser pointer for Foundry VTT (v13–v14). 
 - **Arrow** — Straight or freehand, single- or double-headed.
 - **Shape** — Line, rectangle, ellipse, and polygon (`Shift` snaps 15° / square / circle; `Alt` draws from center; double-click, right-click, or `Enter` closes a polygon).
 - **Laser** — Glowing trail behind the pointer. Ephemeral and excluded from undo history.
-- **Text** — Click, type, `Enter` to place (`Shift+Enter` for a new line).
+- **Text** — Click and type; `Enter` adds a line, `Ctrl/Cmd+Enter` or clicking outside commits, and `Esc` cancels. Text grows to fit by default. Double-click with Select (or click with Text) to edit again. Drag the text to move it, side handles to set a wrapping width, or corner handles to scale the font; use “Restore automatic text width” to remove wrapping.
 - **Eraser** — Whole-mark or partial (masked) erasing.
 
 Strokes stream live to other players (~33 ms batches, with optional name tags), and late joiners receive any active temporary marks. Lifetimes and fades run on Foundry's server clock so marks disappear at the same moment for everyone. Each user has their own undo/redo stack and a scoped clear menu (clearing others' marks or permanent annotations always asks for confirmation). Mouse, touch, and stylus are all supported, with hardware pressure/tilt, palm rejection, and velocity-based simulation when no pen is present.
