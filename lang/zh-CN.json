@@ -269,6 +269,7 @@
       "NothingToUndo": "没有可撤销的操作。",
       "NothingToRedo": "没有可重做的操作。",
       "ColorPicked": "已取色 {color}。",
+      "ColorPickFailed": "无法读取当前画面颜色，请在地图或 Token 上重试。",
       "NoMediaPermission": "你的角色不能使用湿介质绘画。",
       "MediaUndoFailed": "这一笔已无法撤销：之后有其他颜料碰到了它。",
       "MediaBudget": "本场景的颜料存储空间已满。请清除部分颜料，或在设置中调高上限。",

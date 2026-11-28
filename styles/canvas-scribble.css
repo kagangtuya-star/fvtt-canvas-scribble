@@ -506,6 +506,44 @@ body.canvas-scribble-cursor #board {
   cursor: none !important;
 }
 
+#canvas-scribble-eyedropper {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: calc(100vw - 16px);
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 5px;
+  background: #211e26;
+  color: #f5f2ed;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  user-select: none;
+}
+#canvas-scribble-eyedropper[hidden] {
+  display: none;
+}
+#canvas-scribble-eyedropper .cs-eyedropper-swatch {
+  flex: 0 0 18px;
+  height: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 3px;
+  background: var(--cs-color, transparent);
+}
+#canvas-scribble-eyedropper .cs-eyedropper-code {
+  width: 7ch;
+  font:
+    12px/18px ui-monospace,
+    "Cascadia Code",
+    "Consolas",
+    monospace;
+  white-space: nowrap;
+}
+
 .cs-text-editor {
   position: fixed;
   z-index: 95;

@@ -2,6 +2,7 @@ import { BRUSHES, resolveBrushParams } from "../brush/brushes.ts";
 import type { Session } from "../session.ts";
 import { activeBrushId, sizeKey } from "../state/prefs.ts";
 import { h } from "./dom.ts";
+import { EyedropperPreview } from "./eyedropper-preview.ts";
 
 /**
  * Brush cursor over the board: displays the true nib geometry on screen
@@ -12,7 +13,11 @@ import { h } from "./dom.ts";
 export class BrushCursor {
   readonly element: HTMLElement;
   readonly #session: Session;
+  readonly #eyedropper = new EyedropperPreview();
+  readonly #onLeave = () => this.hide();
   #visible = false;
+  #over = false;
+  #pointerType = "mouse";
   #x = 0;
   #y = 0;
 
@@ -21,32 +26,31 @@ export class BrushCursor {
     this.element = h("div", { id: "canvas-scribble-cursor", "aria-hidden": "true" });
     this.element.hidden = true;
     document.body.append(this.element);
+    window.addEventListener("blur", this.#onLeave);
+    document.addEventListener("pointerleave", this.#onLeave);
   }
 
   update(cx: number, cy: number, over: boolean, pointerType: string): void {
-    const { tool } = this.#session.effective();
-    const nativeTool = tool === "select" || tool === "eyedropper";
-    // Pens and fingers have no hover cursor worth replacing; select/eyedropper use system cursor.
-    const show = over && pointerType !== "touch" && !nativeTool;
     this.#x = cx;
     this.#y = cy;
+    this.#over = over;
+    this.#pointerType = pointerType;
+    this.refresh();
+  }
+
+  /** Re-read tool, size/nib shape/angle/colour (prefs or zoom changed). */
+  refresh(): void {
+    const s = this.#session;
+    const { tool, mode } = s.effective();
+    const hover = this.#over && this.#pointerType !== "touch";
+    this.#eyedropper.update(this.#x, this.#y, hover && tool === "eyedropper");
+    const show = hover && tool !== "select" && tool !== "eyedropper";
     if (show !== this.#visible) {
       this.#visible = show;
       this.element.hidden = !show;
       document.body.classList.toggle("canvas-scribble-cursor", show);
     }
-    if (show) this.refresh();
-  }
-
-  /** Re-read size/nib shape/angle/colour (prefs or zoom changed). */
-  refresh(): void {
-    if (!this.#visible) return;
-    const s = this.#session;
-    const { tool, mode } = s.effective();
-    if (tool === "select" || tool === "eyedropper") {
-      this.hide();
-      return;
-    }
+    if (!show) return;
     const key = sizeKey({ ...s.prefs, tool });
     const space = s.space(mode);
     let d = tool === "paint" ? s.prefs.mediaSizes[s.prefs.mediaBrush] : s.prefs.sizes[key];
@@ -97,6 +101,9 @@ export class BrushCursor {
   }
 
   destroy(): void {
+    window.removeEventListener("blur", this.#onLeave);
+    document.removeEventListener("pointerleave", this.#onLeave);
+    this.#eyedropper.destroy();
     document.body.classList.remove("canvas-scribble-cursor");
     this.element.remove();
   }

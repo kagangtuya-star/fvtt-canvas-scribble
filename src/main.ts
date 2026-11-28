@@ -56,7 +56,8 @@ function refreshUI(): void {
   if (!app) return;
   app.palette.show(paletteWanted(app));
   app.palette.render();
-  app.cursor.refresh();
+  if (boardEnabled()) app.cursor.refresh();
+  else app.cursor.hide();
   app.guides.setActive(boardEnabled());
 }
 

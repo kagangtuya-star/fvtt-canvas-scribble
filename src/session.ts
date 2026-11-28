@@ -94,6 +94,7 @@ export class Session implements ToolHost, RenderHost {
   #map: MapSpace | null = null;
   readonly #screen = new ScreenSpace({ left: 0, top: 0, width: 1920, height: 1080 });
   #gesture: Gesture | null = null;
+  #colorPick: AbortController | null = null;
   #eraser: {
     gesture: EraserGesture;
     partial: boolean;
@@ -164,6 +165,7 @@ export class Session implements ToolHost, RenderHost {
   }
 
   setPrefs(patch: Partial<Prefs>): void {
+    this.#cancelColorPick();
     this.prefs = normalizePrefs({ ...this.prefs, ...patch });
     settings.savePrefs(this.prefs);
     this.changed();
@@ -649,11 +651,7 @@ export class Session implements ToolHost, RenderHost {
     this.cancelGesture();
     const { tool, mode } = this.effective();
     if (tool === "eyedropper") {
-      const picked = sampleColorAt(s.cx, s.cy, this.store.ordered(), this.#map, this.#screen);
-      if (picked) {
-        this.setPrefs({ color: picked, recent: pushRecent(this.prefs, picked), tool: "draw" });
-        this.notify("info", "Notify.ColorPicked", { color: picked });
-      }
+      void this.#pickColor(s.cx, s.cy);
       return true;
     }
     if (tool === "select") {
@@ -780,8 +778,37 @@ export class Session implements ToolHost, RenderHost {
     return true;
   }
 
+  async #pickColor(cx: number, cy: number): Promise<void> {
+    const request = new AbortController();
+    this.#colorPick = request;
+    const scene = this.scene;
+    let picked: string | null = null;
+    try {
+      picked = await sampleColorAt(cx, cy, request.signal);
+    } catch (error) {
+      this.log("Colour sampling failed", error);
+    }
+    if (this.#colorPick !== request) return;
+    this.#colorPick = null;
+    if (request.signal.aborted || !scene || this.scene !== scene || this.effective().tool !== "eyedropper") return;
+    if (!picked) {
+      this.notify("warn", "Notify.ColorPickFailed");
+      return;
+    }
+    this.setPrefs({ color: picked, recent: pushRecent(this.prefs, picked), tool: "draw" });
+    this.notify("info", "Notify.ColorPicked", { color: picked });
+  }
+
+  #cancelColorPick(): boolean {
+    const request = this.#colorPick;
+    if (!request) return false;
+    this.#colorPick = null;
+    request.abort();
+    return true;
+  }
+
   cancelGesture(): boolean {
-    let did = false;
+    let did = this.#cancelColorPick();
     if (this.#selectDrag) {
       const d = this.#selectDrag;
       this.#selectDrag = null;

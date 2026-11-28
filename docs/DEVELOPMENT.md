@@ -187,6 +187,15 @@ on the map is the result of brush ↔ paper exchange and fluid physics. Code in 
   (capped at 4096 px edge / 8 Mpx), re-rasterised only when it changes or the zoom tier changes; alpha follows the
   lifetime fade.
 - **Laser**: one `Graphics` per root, redrawn each frame from point timestamps.
+- **Eyedropper**: reads one physical pixel from the next completed screen frame, including map, tokens, wet paint,
+  annotations, lighting and fog. It never substitutes an item's source colour. PIXI 7 screen extraction happens
+  inside `postrender` (offscreen passes are ignored), so it works without `preserveDrawingBuffer`. Canvas2D uses
+  `getImageData` at the same point in the frame. New clicks, preference changes, Escape and scene teardown cancel
+  pending picks; failed or timed-out picks preserve the current colour and show a localized warning.
+  A DOM hover preview follows the pointer with a swatch and `#RRGGBB`, flips away from viewport edges and cannot
+  intercept input or enter the sampled canvas. It keeps at most one read pending and refreshes even when the
+  pointer is stationary. Leaving the board, switching tools, touch input, blur and teardown stop preview sampling;
+  hovering never changes the selected colour or recent colours.
 
 The debug panel (client setting) shows these counters live; `game.modules.get("canvas-scribble").api.stats` exposes
 them to the console.

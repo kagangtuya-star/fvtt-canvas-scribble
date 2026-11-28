@@ -116,3 +116,89 @@ export function dataUrl(path: string): string {
   const route = foundry.utils?.getRoute;
   return route ? route(path) : `/${path}`;
 }
+
+/**
+ * Read one physical pixel of the next completed screen frame (PIXI 7 in v13/v14).
+ * Reading inside postrender also works with preserveDrawingBuffer disabled.
+ * Never extract primary or individual objects: that would bypass fog and composition.
+ */
+export function sampleCanvasPixel(
+  cx: number,
+  cy: number,
+  signal?: AbortSignal,
+): Promise<Uint8Array | Uint8ClampedArray | null> {
+  const board = (globalThis as { canvas?: FoundryCanvas }).canvas;
+  const app = board?.app;
+  const renderer = app?.renderer;
+  if (!board?.ready || !app || !renderer?.on || !renderer.off || signal?.aborted) return Promise.resolve(null);
+  const scene = board.scene;
+  const level = board.level?.id;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (pixel: Uint8Array | Uint8ClampedArray | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      renderer.off!("postrender", onRender);
+      signal?.removeEventListener("abort", onAbort);
+      resolve(pixel);
+    };
+    const onAbort = () => finish(null);
+    const onRender = () => {
+      if (
+        (globalThis as { canvas?: FoundryCanvas }).canvas !== board ||
+        !board.ready ||
+        board.app !== app ||
+        board.scene !== scene ||
+        board.level?.id !== level
+      ) {
+        finish(null);
+        return;
+      }
+      // Foundry also renders offscreen textures; those are not the displayed frame.
+      if (renderer.renderingToScreen !== true) return;
+      try {
+        const view = app.view;
+        const rect = view.getBoundingClientRect();
+        if (
+          !Number.isFinite(cx) ||
+          !Number.isFinite(cy) ||
+          rect.width <= 0 ||
+          rect.height <= 0 ||
+          view.width <= 0 ||
+          view.height <= 0 ||
+          cx < rect.left ||
+          cy < rect.top ||
+          cx >= rect.right ||
+          cy >= rect.bottom
+        ) {
+          finish(null);
+          return;
+        }
+        const px = Math.floor(((cx - rect.left) * view.width) / rect.width);
+        const py = Math.floor(((cy - rect.top) * view.height) / rect.height);
+        if (renderer.gl) {
+          const res = renderer.resolution;
+          if (renderer.gl.isContextLost() || !Number.isFinite(res) || res <= 0 || !renderer.extract) {
+            finish(null);
+            return;
+          }
+          // Extract's screen frame uses logical units and a bottom-left GL origin.
+          // It binds the screen framebuffer and unpremultiplies alpha for us.
+          const frame = new PIXI.Rectangle(px / res, (view.height - 1 - py) / res, 1 / res, 1 / res);
+          finish(renderer.extract.pixels(undefined, frame));
+        } else {
+          // Canvas2D harness: getImageData uses physical pixels and a top-left origin.
+          finish(view.getContext("2d")?.getImageData(px, py, 1, 1).data ?? null);
+        }
+      } catch {
+        finish(null);
+      }
+    };
+    // Paused rendering, a lost context or a background tab must not leave a pending pick.
+    const timer = setTimeout(() => finish(null), 2000);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    renderer.on!("postrender", onRender);
+  });
+}

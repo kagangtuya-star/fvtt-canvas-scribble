@@ -269,6 +269,7 @@
       "NothingToUndo": "Nothing to undo.",
       "NothingToRedo": "Nothing to redo.",
       "ColorPicked": "Picked colour {color}.",
+      "ColorPickFailed": "Could not read a colour from the visible canvas. Try again on the map or a token.",
       "NoMediaPermission": "Your role cannot paint with wet media.",
       "MediaUndoFailed": "That stroke cannot be undone any more: other paint has touched it since.",
       "MediaBudget": "This scene's storage budget for paint is full. Clear some paint or raise the budget in the settings.",

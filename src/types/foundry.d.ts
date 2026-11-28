@@ -102,6 +102,13 @@ declare namespace PIXI {
   interface Renderer {
     resolution: number;
     screen: Rectangle;
+    gl?: WebGLRenderingContext | WebGL2RenderingContext;
+    renderingToScreen?: boolean;
+    extract?: {
+      pixels(target: undefined, frame: Rectangle): Uint8Array | Uint8ClampedArray;
+    };
+    on?(event: "postrender", listener: () => void): unknown;
+    off?(event: "postrender", listener: () => void): unknown;
   }
   class Ticker {
     add(fn: (dt: number) => void, context?: unknown, priority?: number): this;
