@@ -23,6 +23,7 @@
     "check": "npm run typecheck && npm run lint:i18n && npm test && npm run build && npm run validate"
   },
   "dependencies": {
+    "fflate": "0.8.3",
     "lazy-brush": "2.0.2",
     "perfect-freehand": "1.2.3",
     "roughjs": "4.6.6",
@@ -31,6 +32,7 @@
   "devDependencies": {
     "@types/node": "24.19.2",
     "prettier": "3.10.1",
+    "spectral.js": "3.0.0",
     "typescript": "7.0.2"
   }
 }

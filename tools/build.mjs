@@ -47,6 +47,7 @@ const VENDORS = [
   { spec: "simplex-noise", pkg: "simplex-noise", dir: "simplex-noise" },
   { spec: "lazy-brush", pkg: "lazy-brush", dir: "lazy-brush" },
   { spec: "roughjs/bundled/rough.esm.js", pkg: "roughjs", dir: "roughjs", explicitEntry: "bundled/rough.esm.js" },
+  { spec: "fflate", pkg: "fflate", dir: "fflate", explicitEntry: "esm/browser.js" },
 ];
 
 const log = (...m) => console.log("[build]", ...m);

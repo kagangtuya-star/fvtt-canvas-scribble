@@ -55,7 +55,7 @@ describe("release build and packaging", () => {
     root = mkdtempSync(join(tmpdir(), "canvas-scribble-release-"));
     cpSync(join(ROOT, "tools"), join(root, "tools"), { recursive: true });
     // Use the installed runtime dependencies; no network or dependency installation.
-    for (const dep of ["perfect-freehand", "simplex-noise", "lazy-brush", "roughjs"]) {
+    for (const dep of ["perfect-freehand", "simplex-noise", "lazy-brush", "roughjs", "fflate"]) {
       cpSync(join(ROOT, "node_modules", dep), join(root, "node_modules", dep), {
         recursive: true,
       });
