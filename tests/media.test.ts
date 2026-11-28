@@ -227,6 +227,72 @@ const bakedChunk = (out: EngineOut[], key = "0_0") => {
 };
 
 describe("wet-media checkpoint reconciliation", () => {
+  it("checkpoints every live plane losslessly and resumes from the saved simulation time", () => {
+    const original = engine();
+    original.paint("wet", "watercolor", "#2060c0", line(80, 180, 100));
+    original.run(4);
+    const before = original.be.snapshot(0, 0);
+    original.eng.handle({ t: "checkpoint", req: 1 });
+    const baked = original.out.find((m) => m.t === "baked" && m.key === "0_0");
+    assert.ok(baked?.t === "baked" && baked.data);
+    const decoded = decodeBakeState(baked.data)!;
+    assert.ok(decoded.wet);
+    assert.deepEqual(decoded.wet.state, before);
+    assert.ok(decoded.wet.state.fluid.some((v) => v > 0));
+    assert.ok(decoded.wet.state.suspended.some((v) => v > 0));
+    assert.equal(original.out.filter((m) => m.t === "dry").length, 0, "saving never settles paint");
+
+    const restored = engine();
+    restored.advance(1000_000);
+    restored.eng.tick();
+    restored.eng.handle({ t: "load", key: "0_0", data: baked.data, at: 100 });
+    assert.deepEqual(restored.be.snapshot(0, 0), before, "time spent closed does not dry the saved state");
+    original.run(1);
+    restored.run(1);
+    assert.deepEqual(restored.be.snapshot(0, 0), original.be.snapshot(0, 0));
+    restored.eng.handle({ t: "flush", req: 2 });
+    const dry = restored.out.find((m) => m.t === "baked" && m.key === "0_0");
+    assert.ok(dry?.t === "baked" && dry.data);
+    assert.equal(decodeBakeState(dry.data)?.wet, undefined, "Dry now still produces a stable deposit bake");
+  });
+
+  it("preserves clear water and rejects nonfinite or invalid wet checkpoint values", () => {
+    const { eng, be, out, run } = engine();
+    eng.handle({ t: "stroke", id: "water", brush: "water", color: "#102030", size: 24, pigment: 0, water: 1, seed: 7 });
+    eng.handle({ t: "points", id: "water", pts: Float32Array.of(100, 100, 0.7) });
+    eng.handle({ t: "end", id: "water" });
+    run(1);
+    eng.handle({ t: "checkpoint", req: 1 });
+    const baked = out.find((m) => m.t === "baked" && m.key === "0_0");
+    assert.ok(baked?.t === "baked" && baked.data && !baked.empty);
+    assert.ok(decodeBakeState(baked.data)?.wet?.state.fluid.some((v) => v > 0));
+    const halves = be.exportDeposit(0, 0);
+    const state = be.snapshot(0, 0);
+    assert.equal(decodeBakeState(encodeBake(halves, undefined, { remaining: Infinity, state })), null);
+    state.fluid[0] = NaN;
+    assert.equal(decodeBakeState(encodeBake(halves, undefined, { remaining: 1000, state })), null);
+  });
+
+  it("does not replay the covered portion of a stroke after loading a wet checkpoint", () => {
+    const base = engine();
+    base.paint("same", "ink", "#102030", line(100, 420, 100));
+    base.run(2);
+    base.eng.handle({ t: "checkpoint", req: 1 });
+    const copies = base.out.filter((m) => m.t === "baked");
+    const late = engine();
+    for (const m of copies) {
+      assert.ok(m.t === "baked" && m.data);
+      late.eng.handle({ t: "load", key: m.key, data: m.data, at: 100 });
+    }
+    late.paint("same", "ink", "#102030", line(100, 420, 100));
+    late.eng.handle({ t: "checkpoint", req: 2 });
+    for (const m of copies) {
+      if (m.t !== "baked") continue;
+      const [cx, cy] = m.key.split("_").map(Number);
+      assert.deepEqual(late.be.snapshot(cx!, cy!), base.be.snapshot(cx!, cy!));
+    }
+  });
+
   it("imports delayed base pigment and reapplies the newer stroke exactly once", () => {
     const gm = engine();
     gm.paint("base", "ink", "#102030", [80, 90, 0.7]);

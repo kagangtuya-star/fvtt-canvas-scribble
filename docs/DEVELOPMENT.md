@@ -157,8 +157,19 @@ on the map is the result of brush ↔ paper exchange and fluid physics. Code in 
   bounded replay log; if that history is incomplete, it keeps the local paint. Clients cache recent inputs for scene
   switches; the GM also receives strokes from scenes it is not viewing. Receivers sanitize strokes and check the
   sender's `media` permission (default Trusted Player).
-- **Persistence.** When a chunk dries, the active GM bakes its deposits (binary16 planes, deflate via fflate, inside a
-  PNG), wraps the exact bytes in a versioned base64 JSON envelope and uploads it with `FilePicker` to
+- **Persistence.** Saving and drying are independent. Local strokes are synchronously recorded on pen down and pen up,
+  with live points refreshed alongside the 33 ms input batches, in a bounded browser recovery journal scoped to world,
+  scene and authenticated user (200 strokes / 40,000 points / 1 MiB). An interrupted gesture recovers as an ended stroke.
+  The active GM checkpoints the viewed scene after stroke ends (300 ms batching) and approximately every 10 seconds,
+  and also checkpoints when leaving a scene. Wet checkpoints carry lossless Float32 water, saturation, oil, outflows,
+  suspended and deposited pigment, plus the remaining wet time, in a versioned compressed `csWt` PNG chunk. Reload
+  resumes that state; time spent closed does not advance drying. Dry chunks keep the smaller binary16 deposit format.
+  Checkpoints retain per-chunk dab coverage so recovered inputs and peer replays do not double-paint saved strokes.
+  After files and flag references are durable, the GM publishes bounded input receipts (`media.saved`, 512 ids) so
+  clients can release their recovery journals. `media.clearedAt` prevents offline journals from reviving cleared paint;
+  successful undo also drops its recovery input. Journal recovery re-checks the local user's paint permission.
+  Unavailable/full local storage reports a warning; unsent or unacknowledged inputs remain dependent on that browser.
+  The GM wraps the exact checkpoint PNG bytes in a versioned base64 JSON envelope and uploads it with `FilePicker` to
   `worlds/<world>/canvas-scribble/<scene>/<cx>_<cy>_<f>.json`. This prevents image-optimization modules from converting
   simulation data to WebP or altering its pixels. The Scene flag `flags.canvas-scribble.media` keeps
   `{ paper, chunks: { c<cx>_<cy>: { r, t, n, f, format: "json" } } }`. Each upload gets a new file ID.
@@ -166,7 +177,8 @@ on the map is the result of brush ↔ paper exchange and fluid physics. Code in 
   `<cx>_<cy>.png`. The _Paint storage
   budget_ covers current Scene references, including pending writes (2048 chunks at most). Superseded or cleared
   files remain on disk.
-  _Dry now_ waits for uploads and Scene flag writes before confirming a save and guards page refresh while saving.
+  Natural drying and _Dry now_ produce stable deposit bakes. _Dry now_ waits for uploads and Scene flag writes before
+  confirming a save and guards page refresh while saving; it is not required for autosave.
   Uploads must confirm the expected file path. Failed uploads and flag writes receive bounded retries; failed flag
   writes remain queued, and failed uploads leave the dry chunk available for another _Dry now_. Failed bake loads
   are retried and report a warning even when debug logging is disabled. Confirmed HTTP 404/410 or corrupt files are

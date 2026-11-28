@@ -4,10 +4,11 @@ import type { TestContext } from "node:test";
 import { MODULE_ID } from "../src/constants.ts";
 import { bakePath, MediaWriter, readMedia } from "../src/foundry/media-store.ts";
 import type { MediaChunkMeta } from "../src/foundry/media-store.ts";
-import { decodeBake, decodeBakeFile, encodeBakeFile } from "../src/media/bake.ts";
+import { decodeBake, decodeBakeFile, decodeBakeState, encodeBakeFile } from "../src/media/bake.ts";
 import { MediaController } from "../src/media/controller.ts";
 import type { MediaHost } from "../src/media/controller.ts";
 import type { EngineIn, EngineOut } from "../src/media/engine.ts";
+import { journalKey, readJournal } from "../src/media/journal.ts";
 import { strokeToWire } from "../src/media/ops.ts";
 import type { Message } from "../src/net/protocol.ts";
 
@@ -42,8 +43,15 @@ function setup(t: TestContext, updates: (data: Record<string, unknown>) => Promi
     users: { activeGM: { id: "gm" } },
     world: { id: "test" },
     release: { generation: 13 },
+    time: { serverTime: NOW },
   };
   setGlobal(t, "game", { ...game, settings: { get: () => undefined } });
+  const local = new Map<string, string>();
+  setGlobal(t, "localStorage", {
+    getItem: (key: string) => local.get(key) ?? null,
+    setItem: (key: string, value: string) => local.set(key, value),
+    removeItem: (key: string) => local.delete(key),
+  });
   const picker: FilePickerStatic = {
     async upload(_source, dir, file) {
       uploads.push(file.name);
@@ -66,6 +74,10 @@ function setup(t: TestContext, updates: (data: Record<string, unknown>) => Promi
         else if (path.startsWith(`${FLAG}.`)) chunks[path.slice(FLAG.length + 1)] = value as MediaChunkMeta;
         else if (path === `flags.${MODULE_ID}.media.-=chunks`)
           for (const key of Object.keys(chunks)) delete chunks[key];
+        else if (path === `flags.${MODULE_ID}.media.clearedAt`)
+          (scene.flags![MODULE_ID] as { media: { clearedAt?: number } }).media.clearedAt = value as number;
+        else if (path === `flags.${MODULE_ID}.media.saved`)
+          (scene.flags![MODULE_ID] as { media: { saved?: string[] } }).media.saved = value as string[];
       }
     },
   } as unknown as FoundryScene;
@@ -98,6 +110,7 @@ function controller(t: TestContext, scene: FoundryScene, options: { inline?: boo
     scene,
     isRelay: true,
     now: () => NOW,
+    can: () => true,
     net: {
       send: (msg: Partial<Message>, sceneId?: string) => {
         outbound.push(msg);
@@ -793,4 +806,215 @@ it("rechecks a missing checkpoint only when its flag revision changes", async (t
   await tick();
   assert.equal(calls, 4);
   assert.ok(messages.some((m) => m.t === "load" && m.revision === "4:"));
+});
+
+it("records ended inputs synchronously and restores them after refresh before a checkpoint exists", async (t) => {
+  const { scene } = setup(t);
+  const first = controller(t, scene);
+  const id = first.begin();
+  first.media.end(id);
+  const key = journalKey("test", scene.id, "gm");
+  assert.equal(readJournal(key, { w: 1000, h: 1000 }, 0, NOW)[0]?.id, id);
+  assert.equal(
+    first.messages.some((m) => m.t === "checkpoint"),
+    false,
+  );
+  first.media.destroy();
+  const second = controller(t, scene);
+  await tick();
+  assert.ok(second.messages.some((m) => m.t === "stroke" && m.id === id));
+  assert.ok(
+    second.outbound.some((m) => m.t === "me" && m.s?.id === id),
+    "the GM/peers receive recovered inputs",
+  );
+});
+
+it("recovers an unfinished stroke and its streamed points after refresh", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { scene } = setup(t);
+  const first = controller(t, scene);
+  const id = first.begin();
+  const key = journalKey("test", scene.id, "gm");
+  assert.equal(readJournal(key, { w: 1000, h: 1000 }, 0, NOW)[0]?.id, id, "pen down records the first input");
+  first.media.add(id, [120, 100, 0.7]);
+  t.mock.timers.tick(33);
+  assert.equal(readJournal(key, { w: 1000, h: 1000 }, 0, NOW)[0]?.points.length, 6);
+  first.media.destroy();
+  const second = controller(t, scene);
+  const fresh = second.begin();
+  await tick();
+  assert.ok(second.messages.some((m) => m.t === "stroke" && m.id === id));
+  assert.ok(second.messages.some((m) => m.t === "end" && m.id === id));
+  assert.deepEqual(new Set(readJournal(key, { w: 1000, h: 1000 }, 0, NOW).map((s) => s.id)), new Set([id, fresh]));
+});
+
+it("keeps an unfinished input journal after saving a periodic wet checkpoint", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const { scene } = setup(t);
+  const { media, messages, begin, emit } = controller(t, scene);
+  begin();
+  t.mock.timers.tick(12_000);
+  await tick();
+  t.mock.timers.tick(300);
+  await tick();
+  const checkpoint = messages.findLast((m) => m.t === "checkpoint");
+  assert.ok(checkpoint?.t === "checkpoint");
+  emit({ t: "baked", req: checkpoint.req, key: KEY, data: Uint8Array.of(1), empty: false, at: NOW });
+  emit({ t: "flushed", req: checkpoint.req, strokes: [] });
+  await tick();
+  assert.ok(localStorage.getItem(journalKey("test", scene.id, "gm")), "the remaining gesture is still recoverable");
+});
+
+it("autosaves without Dry now and retains the journal until Scene persistence succeeds", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const writing = deferred();
+  const release = deferred();
+  const { scene } = setup(t, async () => {
+    writing.resolve();
+    await release.promise;
+  });
+  const { media, messages, begin, emit } = controller(t, scene);
+  const id = begin();
+  media.end(id);
+  t.mock.timers.tick(300);
+  await tick();
+  const checkpoint = messages.findLast((m) => m.t === "checkpoint");
+  assert.ok(checkpoint?.t === "checkpoint");
+  assert.equal(
+    messages.some((m) => m.t === "flush" || m.t === "dryAll"),
+    false,
+  );
+  emit({ t: "baked", req: checkpoint.req, key: KEY, data: Uint8Array.of(1), empty: false, at: NOW });
+  emit({ t: "flushed", req: checkpoint.req, ok: true });
+  await writing.promise;
+  const key = journalKey("test", scene.id, "gm");
+  assert.ok(localStorage.getItem(key), "upload alone is not an acknowledgement");
+  release.resolve();
+  await tick();
+  assert.equal(localStorage.getItem(key), null);
+  assert.equal(readMedia(scene).chunks.size, 1);
+
+  // Periodic checkpoints continue even without another stroke.
+  t.mock.timers.tick(12_000);
+  await tick();
+  t.mock.timers.tick(300);
+  await tick();
+  assert.ok(messages.filter((m) => m.t === "checkpoint").length >= 2);
+});
+
+it("retains local recovery inputs when an automatic checkpoint or its Scene write fails", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  t.mock.method(console, "error", () => {});
+  const { scene } = setup(t, async () => {
+    throw new Error("Scene write unavailable");
+  });
+  const { media, messages, begin, emit } = controller(t, scene);
+  media.end(begin());
+  t.mock.timers.tick(300);
+  await tick();
+  const checkpoint = messages.findLast((m) => m.t === "checkpoint");
+  assert.ok(checkpoint?.t === "checkpoint");
+  emit({ t: "baked", req: checkpoint.req, key: KEY, data: Uint8Array.of(1), empty: false, at: NOW });
+  emit({ t: "flushed", req: checkpoint.req });
+  await tick();
+  assert.ok(localStorage.getItem(journalKey("test", scene.id, "gm")));
+  assert.equal(readMedia(scene).chunks.size, 0);
+});
+
+it("drops recovery inputs after undo or clear and honors a clear while the client was offline", async (t) => {
+  const { scene } = setup(t);
+  const first = controller(t, scene);
+  const id = first.begin();
+  first.media.end(id);
+  first.media.undo();
+  const undo = first.messages.findLast((m) => m.t === "undo");
+  assert.ok(undo?.t === "undo");
+  first.emit({ t: "undone", req: undo.req, ok: true, removed: [] });
+  const key = journalKey("test", scene.id, "gm");
+  assert.equal(localStorage.getItem(key), null);
+  first.media.end(first.begin());
+  const old = localStorage.getItem(key)!;
+  first.media.clearLocal();
+  first.media.relayClear(scene);
+  await first.media.writer.drain();
+  assert.equal(localStorage.getItem(key), null);
+  assert.equal(readMedia(scene).clearedAt, NOW);
+  first.media.destroy();
+  localStorage.setItem(key, old);
+  (scene.flags![MODULE_ID] as { media: { clearedAt: number } }).media.clearedAt = NOW + 1;
+  const second = controller(t, scene);
+  await tick();
+  assert.equal(
+    second.messages.some((m) => m.t === "stroke"),
+    false,
+  );
+});
+
+it("does not restore local inputs after media permission is revoked", async (t) => {
+  const { scene } = setup(t);
+  const first = controller(t, scene);
+  first.media.end(first.begin());
+  first.media.destroy();
+  const second = controller(t, scene);
+  second.host.can = () => false;
+  await tick();
+  assert.equal(
+    second.messages.some((m) => m.t === "stroke"),
+    false,
+  );
+});
+
+it("releases a player's local journal only when the GM publishes a durable input receipt", async (t) => {
+  const { scene } = setup(t);
+  const { media, host, begin } = controller(t, scene);
+  host.isRelay = false;
+  const id = begin();
+  media.end(id);
+  const key = journalKey("test", scene.id, "gm");
+  assert.ok(localStorage.getItem(key));
+  const writer = new MediaWriter(() => 1024);
+  writer.acknowledge(scene, [id]);
+  assert.ok(localStorage.getItem(key), "a queued receipt does not acknowledge the input yet");
+  await writer.drain();
+  media.onSceneUpdate(scene, { flags: { [MODULE_ID]: { media: { saved: [id] } } } });
+  await tick();
+  assert.equal(localStorage.getItem(key), null);
+  writer.clear(scene);
+  await writer.drain();
+  assert.deepEqual(readMedia(scene).saved, []);
+});
+
+it("automatically uploads live CPU state and restores wet paint in a fresh controller", async (t) => {
+  const written = deferred();
+  const { scene, files } = setup(t, async () => written.resolve());
+  const first = controller(t, scene, {
+    inline: true,
+    fetch: async (input) => {
+      const path = String(input).split("?")[0]!.replace(/^\/+/, "");
+      const data = files.get(path);
+      return data ? new Response(new Uint8Array(data)) : new Response("", { status: 404 });
+    },
+  });
+  first.media.view([0, 0, 250, 250]);
+  first.media.end(first.begin());
+  await written.promise;
+  await tick();
+  const meta = readMedia(scene).chunks.get(KEY)!;
+  const png = decodeBakeFile(files.get(bakePath(scene.id, KEY, meta.f, meta.format)!)!)!;
+  const wet = decodeBakeState(png)?.wet;
+  assert.ok(wet);
+  assert.ok(wet.state.fluid.some((v) => v > 0));
+  assert.ok(wet.state.suspended.some((v) => v > 0));
+  first.media.destroy();
+  const restored = new MediaController(first.host as unknown as MediaHost);
+  t.after(() => restored.destroy());
+  const shown = deferred();
+  restored.onDisplay = (_key, data) => {
+    if (data) shown.resolve();
+  };
+  restored.view([0, 0, 250, 250]);
+  restored.attach(scene);
+  await shown.promise;
+  assert.equal([...restored.displays()].length, 1);
+  assert.ok(restored.stats?.wet, "the checkpoint resumes simulation instead of importing only deposits");
 });

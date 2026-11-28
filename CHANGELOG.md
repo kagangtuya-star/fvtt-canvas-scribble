@@ -28,7 +28,8 @@ First release.
   on five papers — spectral Kubelka–Munk pigment mixing, bristle reservoirs that pick up and drag wet paint,
   virtual-pipe surface flow, capillary spread along paper fibres, edge darkening, granulation, re-wetting, wet/dry
   state and drying, ink build-up. Runs in a worker (CPU reference, WebGL2 backend after a parity self-test); strokes
-  are synchronised as inputs; dried paint is baked by the GM into files referenced from Scene flags.
+  are synchronised as inputs. Local input recovery and periodic GM checkpoints save wet simulation state independently
+  of drying; reloading resumes wetness and pigment flow. Dry paint keeps compact deposit bakes in Scene-referenced files.
 - English and Simplified Chinese.
 
 ### Fixed
@@ -43,8 +44,9 @@ First release.
   still update slowly on the CPU; it starts drying older paint early after reaching 16 wet chunks.
 - Wet media: every client simulates strokes itself; small floating-point differences between machines can show while
   paint is wet and converge when the GM's bake of the dried area is loaded.
-- Wet media: there is no redo for paint, and undo only works while no later stroke touched the same areas. Paint made
-  while no GM is online is not saved. Clearing or replacing paint leaves the old files on disk.
+- Wet media: there is no redo for paint, and undo only works while no later stroke touched the same areas. Without an
+  active GM viewing the scene, recovery relies on the same browser's bounded input journal until a server checkpoint
+  is saved. Clearing or replacing paint leaves the old files on disk.
 
 - Only tested in a browser harness that imitates Foundry's APIs, not yet in a running Foundry v13 or v14 server (see
   [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)).

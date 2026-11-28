@@ -2,7 +2,7 @@ import { encodePoints, quantizePoints } from "../core/codec.ts";
 import type { Action } from "../core/permissions.ts";
 import type { Bounds } from "../core/geometry.ts";
 import { hashString, randomId } from "../core/util.ts";
-import { activeGM, dataUrl } from "../foundry/compat.ts";
+import { activeGM, dataUrl, worldId } from "../foundry/compat.ts";
 import { bakePath, MediaWriter, readMedia } from "../foundry/media-store.ts";
 import type { MediaChunkMeta, MediaRefusal } from "../foundry/media-store.ts";
 import { sceneRef } from "../foundry/persistence.ts";
@@ -16,6 +16,7 @@ import { MEDIA_BRUSHES } from "./brushes.ts";
 import type { MediaBrushId, PaperId } from "./brushes.ts";
 import type { EngineIn, EngineOut } from "./engine.ts";
 import { CELL_UNITS, CHUNK, chunkKey } from "./layout.ts";
+import { journalKey, readJournal, writeJournal } from "./journal.ts";
 import { MAX_MEDIA_POINTS, MAX_MEDIA_SIZE, sanitizePoints, sanitizeStroke, strokeToWire } from "./ops.ts";
 import type { MediaStroke, WireStroke } from "./ops.ts";
 
@@ -25,8 +26,8 @@ import type { MediaStroke, WireStroke } from "./ops.ts";
  * - Runs the {@link MediaEngine} in a module worker (inline as a fallback).
  * - Streams local strokes as inputs (`ms`/`mp`/`me`), applies validated
  *   remote strokes, undo (`mu`) and late-join replays (`mq`/`mr`).
- * - Loads the GM's bakes from the Scene flags; on the active GM, bakes chunks
- *   when they dry and stores them through {@link MediaWriter}.
+ * - Journals local inputs and loads the GM's checkpoints from the Scene flags;
+ *   the active GM autosaves live state and dry deposits through {@link MediaWriter}.
  *
  * Clients simulate the same inputs, but arrival order and timing differ
  * slightly, so wet paint may differ in detail between clients. Once a chunk
@@ -75,6 +76,8 @@ const REMOTE_STALE_MS = 15_000;
 const FETCH_PARALLEL = 3;
 /** Remembered stroke authors (undo routing, replay protection). */
 const AUTHORS_MAX = 2000;
+const AUTOSAVE_DELAY_MS = 300;
+const CHECKPOINT_INTERVAL_MS = 10_000;
 
 interface LocalStroke {
   stroke: MediaStroke;
@@ -104,6 +107,7 @@ interface BakeRequest {
   missing: Set<string>;
   writes?: Promise<boolean>[];
   failed?: boolean;
+  strokes?: string[];
 }
 const revisionOf = (meta: MediaChunkMeta): string => `${meta.r}:${meta.f ?? ""}${meta.format ? `:${meta.format}` : ""}`;
 const EMPTY_VIEW: View = { t: "view", x0: 0, y0: 0, x1: -1, y1: -1 };
@@ -142,6 +146,8 @@ export class MediaController {
   #paper: PaperId | null = null;
   #req = 0;
   readonly #local = new Map<string, LocalStroke>();
+  readonly #journal = new Map<string, MediaStroke>();
+  #journalWarning = false;
   readonly #localStash = new Map<string, LocalStroke[]>();
   readonly #undo: string[] = [];
   readonly #remote = new Map<string, RemoteStroke>();
@@ -168,6 +174,10 @@ export class MediaController {
   readonly #displays = new Map<string, Uint8ClampedArray>();
   #sendTimer: ReturnType<typeof setTimeout> | null = null;
   #housekeeping: ReturnType<typeof setInterval> | null = null;
+  #saveTimer: ReturnType<typeof setTimeout> | null = null;
+  #saving: Promise<void> | null = null;
+  #saveAgain = false;
+  #checkpointAt = 0;
   #warnedNoGM = 0;
   stats: MediaStats | null = null;
   /** Chunk display updates (the renderer's media layer). */
@@ -361,6 +371,8 @@ export class MediaController {
         this.#stored(msg);
         return;
       case "flushed": {
+        const request = this.#bakeScenes.get(msg.req);
+        if (request) request.strokes = msg.strokes;
         const done = this.#flushes.get(msg.req);
         this.#flushes.delete(msg.req);
         done?.(msg.ok !== false);
@@ -397,6 +409,20 @@ export class MediaController {
         if (msg.removed?.length && this.#host.isRelay) this.writer.remove(scene, msg.removed);
         if (mine) {
           if (sameScene) this.#local.delete(id);
+          if (sameScene) {
+            this.#journal.delete(id);
+            this.#writeJournal();
+          } else {
+            const key = this.#journalKey(scene.id);
+            const ref = sceneRef(scene);
+            if (key)
+              writeJournal(
+                key,
+                readJournal(key, { w: ref.w, h: ref.h }, readMedia(scene).clearedAt, this.#host.now()).filter(
+                  (s) => s.id !== id,
+                ),
+              );
+          }
           const stashed = this.#localStash.get(scene.id);
           if (stashed)
             this.#localStash.set(
@@ -405,6 +431,7 @@ export class MediaController {
             );
           this.#host.net.send({ t: "mu", id }, scene.id);
         }
+        this.#scheduleSave();
         return;
       }
       case "stats":
@@ -425,7 +452,7 @@ export class MediaController {
 
   /**
    * View a scene. A redraw of the same scene (configuration change, level
-   * switch…) keeps the wet paint; switching scenes dries and bakes what the
+   * switch…) keeps the wet paint; switching scenes checkpoints what the
    * GM leaves behind and starts empty.
    */
   attach(scene: FoundryScene): void {
@@ -439,8 +466,15 @@ export class MediaController {
     }
     if (parked && this.#sceneId) this.#leave(parked);
     this.#sceneId = scene.id;
-    this.#clearedAt = this.#clearTimes.get(scene.id) ?? -1;
     const flags = readMedia(scene);
+    this.#clearedAt = Math.max(this.#clearTimes.get(scene.id) ?? -1, flags.clearedAt);
+    // Read before asynchronous base loads, so new input cannot overwrite an older recovery journal.
+    const key = this.#journalKey(scene.id);
+    if (key && this.#host.can("media")) {
+      const ref = sceneRef(scene);
+      for (const stroke of readJournal(key, { w: ref.w, h: ref.h }, this.#clearedAt, this.#host.now()))
+        if (!flags.saved.includes(stroke.id)) this.#journal.set(stroke.id, stroke);
+    }
     this.#paper = flags.paper ?? settings.mediaPaper();
     if (this.#link) {
       this.#post({ t: "paper", paper: this.#paper, seed: paperSeed(scene.id) });
@@ -452,6 +486,7 @@ export class MediaController {
     void this.#syncFlags(scene).then(() => {
       if (this.#sceneId !== scene.id || this.#epoch !== epoch) return;
       this.#replayLocal(scene.id);
+      this.#restoreJournal(scene);
       this.#replayRemote(scene);
       this.#host.net.send({ t: "mq" });
     });
@@ -475,11 +510,11 @@ export class MediaController {
       if (this.#localStash.size > 6) this.#localStash.delete(this.#localStash.keys().next().value!);
     }
     if (this.#link && this.#host.isRelay) {
-      // Wet paint the GM leaves behind is dried and baked now (the engine handles messages in order).
+      // Save the live state before clearing the engine (messages are handled in order).
       const req = ++this.#req;
       this.#bakeScenes.set(req, { scene, epoch: this.#epoch, missing: this.#missingKeys() });
       this.#flushes.set(req, () => this.#bakeScenes.delete(req));
-      this.#post({ t: "flush", req });
+      this.#post({ t: "checkpoint", req });
     }
     this.#resetScene();
     this.#authors.clear();
@@ -493,7 +528,11 @@ export class MediaController {
 
   #resetScene(): void {
     this.#stopSending();
+    if (this.#saveTimer !== null) clearTimeout(this.#saveTimer);
+    this.#saveTimer = null;
+    this.#saveAgain = false;
     this.#local.clear();
+    this.#journal.clear();
     this.#undo.length = 0;
     this.#remote.clear();
     this.#loaded.clear();
@@ -532,6 +571,11 @@ export class MediaController {
 
   async #syncFlags(scene: FoundryScene): Promise<void> {
     const flags = readMedia(scene);
+    this.#clearedAt = Math.max(this.#clearedAt, flags.clearedAt);
+    if (this.#journal.size) {
+      for (const id of flags.saved) this.#journal.delete(id);
+      this.#writeJournal();
+    }
     const paper = flags.paper ?? settings.mediaPaper();
     if (paper !== this.#paper) {
       this.#paper = paper;
@@ -662,6 +706,109 @@ export class MediaController {
   /*  GM bakes                                    */
   /* -------------------------------------------- */
 
+  #scheduleSave(): void {
+    if (!this.#host.isRelay || !this.#link || this.#saveTimer !== null) return;
+    this.#saveTimer = setTimeout(() => {
+      this.#saveTimer = null;
+      if (this.#saving) {
+        this.#saveAgain = true;
+        return;
+      }
+      const scene = this.#host.scene;
+      if (!scene || scene.id !== this.#sceneId || !this.#host.isRelay) return;
+      this.#checkpointAt = performance.now();
+      this.#saving = this.#checkpoint(scene)
+        .catch((err) => {
+          this.#host.log("media autosave failed", err);
+          this.#host.notify("warn", "Notify.MediaUploadFailed");
+        })
+        .finally(() => {
+          this.#saving = null;
+          if (this.#saveAgain) {
+            this.#saveAgain = false;
+            this.#scheduleSave();
+          }
+        });
+    }, AUTOSAVE_DELAY_MS);
+  }
+
+  async #checkpoint(scene: FoundryScene): Promise<void> {
+    const epoch = this.#epoch;
+    await this.#syncFlags(scene);
+    if (!this.#link || scene.id !== this.#sceneId || epoch !== this.#epoch || !this.#host.isRelay) return;
+    const ids = [...this.#journal.keys()].filter((id) => this.#local.get(id)?.ended);
+    const req = ++this.#req;
+    const request: BakeRequest = { scene, epoch, missing: this.#missingKeys() };
+    this.#bakeScenes.set(req, request);
+    const flushed = new Promise<boolean>((resolve) => {
+      this.#flushes.set(req, (ok = true) => {
+        this.#bakeScenes.delete(req);
+        resolve(ok);
+      });
+    });
+    this.#post({ t: "checkpoint", req });
+    const ok = await flushed;
+    const writes = await Promise.all(request.writes ?? []);
+    const persisted = await this.writer.drain();
+    if (ok && !request.failed && writes.every(Boolean) && persisted && !request.missing.size) {
+      if (scene.id === this.#sceneId && epoch === this.#epoch && this.#host.isRelay) {
+        this.writer.acknowledge(scene, request.strokes ?? []);
+        await this.writer.drain();
+      }
+      this.#ackJournal(scene, epoch, ids);
+    }
+  }
+
+  #journalKey(sceneId = this.#sceneId): string | null {
+    const world = worldId();
+    return world && sceneId ? journalKey(world, sceneId, game.user.id) : null;
+  }
+
+  #writeJournal(): void {
+    const key = this.#journalKey();
+    if (!key || writeJournal(key, [...this.#journal.values()]) || !this.#journal.size || this.#journalWarning) return;
+    this.#journalWarning = true;
+    this.#host.notify("warn", "Notify.MediaJournalFailed");
+  }
+
+  #recordInput(stroke: MediaStroke): void {
+    if (!this.#journal.has(stroke.id)) {
+      const points = [...this.#journal.values()].reduce((n, s) => n + s.points.length / 3, 0);
+      if (this.#journal.size < LOG_MAX && points + stroke.points.length / 3 <= LOG_POINTS)
+        this.#journal.set(stroke.id, stroke);
+      else if (!this.#journalWarning) {
+        this.#journalWarning = true;
+        this.#host.notify("warn", "Notify.MediaJournalFailed");
+      }
+    }
+    this.#writeJournal();
+  }
+
+  #restoreJournal(scene: FoundryScene): void {
+    const key = this.#journalKey(scene.id);
+    if (!key || !this.#host.can("media")) return;
+    const saved = new Set(readMedia(scene).saved);
+    for (const stroke of this.#journal.values()) {
+      if (saved.has(stroke.id)) continue;
+      this.#journal.set(stroke.id, stroke);
+      if ([...this.#undoReqs.values()].some((r) => r.mine && r.scene.id === scene.id && r.id === stroke.id)) continue;
+      if (this.#authors.has(stroke.id)) continue;
+      this.#local.set(stroke.id, { stroke, sent: stroke.points.length / 3, ended: true, endedAt: Date.now() });
+      this.#startRemote(stroke, game.user.id);
+      this.#remote.get(stroke.id)!.ended = true;
+      this.#post({ t: "end", id: stroke.id });
+      this.#host.net.send({ t: "me", s: strokeToWire(stroke) });
+    }
+    this.#writeJournal();
+    if (this.#journal.size) this.#scheduleSave();
+  }
+
+  #ackJournal(scene: FoundryScene, epoch: number, ids: string[]): void {
+    if (scene.id !== this.#sceneId || epoch !== this.#epoch) return;
+    for (const id of ids) this.#journal.delete(id);
+    this.#writeJournal();
+  }
+
   #stored(msg: Extract<EngineOut, { t: "baked" }>): void {
     const request = this.#bakeScenes.get(msg.req);
     if (!this.#flushes.has(msg.req)) this.#bakeScenes.delete(msg.req);
@@ -722,6 +869,7 @@ export class MediaController {
         await this.#syncFlags(scene);
         if (scene.id !== this.#sceneId || !this.#link) return false;
         const req = ++this.#req;
+        const ids = [...this.#journal.keys()].filter((id) => this.#local.get(id)?.ended);
         const request: BakeRequest = { scene, epoch: this.#epoch, missing: this.#missingKeys() };
         this.#bakeScenes.set(req, request);
         const flushed = new Promise<boolean>((resolve) => {
@@ -736,6 +884,7 @@ export class MediaController {
         const persisted = await this.writer.drain();
         const missing = scene.id === this.#sceneId ? this.#missingKeys().size : request.missing.size;
         const saved = ok && !request.failed && writes.every(Boolean) && persisted && !missing;
+        if (saved) this.#ackJournal(scene, request.epoch, ids);
         this.#host.notify(saved ? "info" : "warn", saved ? "Notify.MediaSaved" : "Notify.MediaSaveFailed");
         return saved;
       } finally {
@@ -787,6 +936,7 @@ export class MediaController {
       at: Math.round(this.#host.now()),
     };
     this.#local.set(id, { stroke, sent: pts.length / 3, ended: false, endedAt: 0 });
+    this.#recordInput(stroke);
     this.#remember(id, game.user.id);
     this.#post({
       t: "stroke",
@@ -825,13 +975,16 @@ export class MediaController {
 
   #flushLive(): void {
     this.#sendTimer = null;
+    let changed = false;
     for (const [id, s] of this.#local) {
       if (s.ended) continue;
       const total = s.stroke.points.length / 3;
       if (total <= s.sent) continue;
       this.#host.net.send({ t: "mp", id, from: s.sent, pts: encodePoints(s.stroke.points.slice(s.sent * 3)) });
       s.sent = total;
+      changed = true;
     }
+    if (changed) this.#writeJournal();
   }
 
   #stopSending(): void {
@@ -846,7 +999,9 @@ export class MediaController {
     s.endedAt = Date.now();
     s.sent = s.stroke.points.length / 3;
     this.#post({ t: "end", id });
+    this.#recordInput(s.stroke);
     this.#host.net.send({ t: "me", s: strokeToWire(s.stroke) });
+    this.#scheduleSave();
     this.#undo.push(id);
     if (this.#undo.length > UNDO_MAX) this.#undo.shift();
     this.#pruneLog();
@@ -940,12 +1095,14 @@ export class MediaController {
     if (this.#sceneId === sceneId) this.#clearedAt = now;
     this.#recentRemote.delete(sceneId);
     this.#localStash.delete(sceneId);
+    const key = this.#journalKey(sceneId);
+    if (key) writeJournal(key, []);
   }
 
   /** GM: forget the stored bakes of a scene. */
   relayClear(scene: FoundryScene): void {
     this.#invalidateBakes(scene.id);
-    this.writer.clear(scene);
+    this.writer.clear(scene, this.#host.now());
   }
 
   #invalidateBakes(sceneId: string): void {
@@ -1003,6 +1160,7 @@ export class MediaController {
         if (msg.t === "me" && !r.ended) {
           r.ended = true;
           this.#post({ t: "end", id: stroke.id });
+          this.#scheduleSave();
         }
         return;
       }
@@ -1072,6 +1230,7 @@ export class MediaController {
           this.#startRemote(stroke, sender.id);
           this.#remote.get(stroke.id)!.ended = true;
           this.#post({ t: "end", id: stroke.id });
+          this.#scheduleSave();
         }
         return;
       }
@@ -1169,6 +1328,7 @@ export class MediaController {
       this.#post({ t: "end", id });
     }
     if (this.#link) this.#post({ t: "clock", offset: this.#clockOffset() });
+    if (now - this.#checkpointAt >= CHECKPOINT_INTERVAL_MS) this.#scheduleSave();
   }
 
   destroy(): void {

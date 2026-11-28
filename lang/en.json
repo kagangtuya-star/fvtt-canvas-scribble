@@ -276,11 +276,12 @@
       "MediaTooMany": "This scene has reached the maximum number of painted areas.",
       "MediaUnavailable": "Paint cannot be saved: file uploads are not available on this server.",
       "MediaUploadFailed": "Saving paint failed (see console).",
+      "MediaJournalFailed": "Local paint recovery is unavailable or full. Keep this page open until the GM's automatic save completes.",
       "MediaLoadFailed": "Some saved paint could not be read (see console). Existing files have not been deleted.",
       "MediaMissing": "Some saved paint files are missing and have been skipped. You can keep painting; missing paint needs a backup to restore.",
       "MediaSaved": "Paint is dry and saved.",
       "MediaSaveFailed": "Paint has not been fully saved. Keep this page open and try Dry now again.",
-      "MediaNoGM": "No GM is online: wet paint is shown but will not be kept."
+      "MediaNoGM": "No GM is online: paint inputs are kept locally, but server autosave needs an active GM."
     },
     "Settings": {
       "PermScreen": {
@@ -339,11 +340,11 @@
       },
       "PermMedia": {
         "Name": "Wet-media painting: minimum role",
-        "Hint": "Who may use the Paint tool. Dry paint is saved by the GM's client as files in the world folder."
+        "Hint": "Who may use the Paint tool. Wet and dry paint are saved automatically by the GM's client in the world folder."
       },
       "MediaBudget": {
         "Name": "Paint storage per scene (MB)",
-        "Hint": "Disk space the dry paint of one scene may use."
+        "Hint": "Disk space the paint checkpoints of one scene may use, including wet simulation state."
       },
       "MediaDrying": {
         "Name": "Paint drying speed",

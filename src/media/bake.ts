@@ -1,8 +1,10 @@
 import { unzlibSync, zlibSync } from "fflate";
-import { CHUNK, CHUNK_CELLS, PIG_CHANNELS } from "./layout.ts";
+import { CHUNK, CHUNK_CELLS, FLUID_CHANNELS, PIG_CHANNELS } from "./layout.ts";
+import type { ChunkSnapshot } from "./sim/backend.ts";
+import { WET_SECONDS } from "./sim/physics.ts";
 
 /**
- * Bake format: the deposited pigment of one dry chunk, stored as a lossless
+ * Bake format: deposited pigment with optional live simulation state, stored as a lossless
  * 8-bit RGB PNG, uploaded inside a JSON envelope to avoid image optimization. PNG is encoded and decoded
  * here (fflate for zlib) instead of through a canvas, because canvases apply
  * colour management and alpha premultiplication that would corrupt the data.
@@ -10,6 +12,7 @@ import { CHUNK, CHUNK_CELLS, PIG_CHANNELS } from "./layout.ts";
  * Payload (packed row-major into the RGB bytes):
  *   header  32 bytes: "CSMEDIA" + version, chunk edge (u16), channels (u8)
  *   planes  for each channel: N² high bytes, then N² low bytes of binary16
+ * Optional csWt chunk: version, remaining wet time and compressed Float32 simulation planes.
  */
 
 const MAGIC = "CSMEDIA";
@@ -59,6 +62,51 @@ export interface BakeCoverage {
   legacyAt: number;
 }
 
+/** Lossless live simulation state; drying pauses while the project is closed. */
+export interface WetCheckpoint {
+  remaining: number;
+  state: ChunkSnapshot;
+}
+
+const WET_PLANES = [FLUID_CHANNELS, 4, PIG_CHANNELS, PIG_CHANNELS] as const;
+const WET_BYTES = 12 + WET_PLANES.reduce((sum, n) => sum + n * CHUNK_CELLS * 4, 0);
+
+function encodeWet(wet: WetCheckpoint): Uint8Array {
+  const bytes = new Uint8Array(WET_BYTES);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, 1);
+  view.setFloat64(4, wet.remaining);
+  let offset = 12;
+  for (const plane of [wet.state.fluid, wet.state.flux, wet.state.suspended, wet.state.deposited]) {
+    for (const value of plane) {
+      view.setFloat32(offset, value);
+      offset += 4;
+    }
+  }
+  if (offset !== WET_BYTES) throw new Error("bad wet checkpoint size");
+  return zlibSync(bytes, { level: 6 });
+}
+
+function decodeWet(data: Uint8Array): WetCheckpoint | null {
+  const bytes = unzlibSync(data, { out: new Uint8Array(WET_BYTES) });
+  if (bytes.length !== WET_BYTES) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const remaining = view.getFloat64(4);
+  if (view.getUint32(0) !== 1 || !Number.isFinite(remaining) || remaining < 0 || remaining > WET_SECONDS.oil * 20_000)
+    return null;
+  let offset = 12;
+  const planes = WET_PLANES.map((n) => {
+    const plane = new Float32Array(n * CHUNK_CELLS);
+    for (let i = 0; i < plane.length; i++) {
+      plane[i] = view.getFloat32(offset);
+      offset += 4;
+      if (!Number.isFinite(plane[i]) || plane[i]! < 0) throw new Error("bad wet checkpoint value");
+    }
+    return plane;
+  });
+  return { remaining, state: { fluid: planes[0]!, flux: planes[1]!, suspended: planes[2]!, deposited: planes[3]! } };
+}
+
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
@@ -88,7 +136,7 @@ function chunk(type: string, data: Uint8Array): Uint8Array {
 }
 
 /** Encode deposited planes (PIG_CHANNELS × CHUNK² binary16) as PNG bytes. */
-export function encodeBake(halves: Uint16Array, coverage?: BakeCoverage): Uint8Array {
+export function encodeBake(halves: Uint16Array, coverage?: BakeCoverage, wet?: WetCheckpoint): Uint8Array {
   if (halves.length !== PIG_CHANNELS * CHUNK_CELLS) throw new Error("bad bake size");
   const payload = new Uint8Array(BAKE_HEIGHT * ROW);
   for (let i = 0; i < MAGIC.length; i++) payload[i] = MAGIC.charCodeAt(i);
@@ -126,6 +174,7 @@ export function encodeBake(halves: Uint16Array, coverage?: BakeCoverage): Uint8A
     Uint8Array.from(SIGNATURE),
     chunk("IHDR", ihdr),
     ...(coverage ? [chunk("csOp", new TextEncoder().encode(JSON.stringify(coverage)))] : []),
+    ...(wet ? [chunk("csWt", encodeWet(wet))] : []),
     chunk("IDAT", zlibSync(raw, { level: 6 })),
     chunk("IEND", new Uint8Array(0)),
   ];
@@ -151,7 +200,9 @@ export function decodeBake(bytes: Uint8Array): Uint16Array | null {
   return decodeBakeState(bytes)?.halves ?? null;
 }
 
-export function decodeBakeState(bytes: Uint8Array): { halves: Uint16Array; coverage?: BakeCoverage } | null {
+export function decodeBakeState(
+  bytes: Uint8Array,
+): { halves: Uint16Array; coverage?: BakeCoverage; wet?: WetCheckpoint } | null {
   try {
     if (bytes.length < 64 || bytes.length > MAX_BAKE_BYTES) return null;
     for (let i = 0; i < 8; i++) if (bytes[i] !== SIGNATURE[i]) return null;
@@ -159,6 +210,7 @@ export function decodeBakeState(bytes: Uint8Array): { halves: Uint16Array; cover
     let o = 8;
     let header = false;
     let coverage: BakeCoverage | undefined;
+    let wet: WetCheckpoint | undefined;
     const idat: Uint8Array[] = [];
     while (o + 12 <= bytes.length) {
       const len = view.getUint32(o);
@@ -194,6 +246,11 @@ export function decodeBakeState(bytes: Uint8Array): { halves: Uint16Array; cover
         )
           return null;
         coverage = { legacyAt: raw.legacyAt, strokes: raw.strokes };
+      } else if (type === "csWt") {
+        if (wet) return null;
+        const checkpoint = decodeWet(data);
+        if (!checkpoint) return null;
+        wet = checkpoint;
       } else if (type === "IDAT") idat.push(data);
       else if (type === "IEND") break;
       o += 12 + len;
@@ -249,7 +306,7 @@ export function decodeBakeState(bytes: Uint8Array): { halves: Uint16Array; cover
       const lo = hi + CHUNK_CELLS;
       for (let i = 0; i < CHUNK_CELLS; i++) halves[c * CHUNK_CELLS + i] = (payload[hi + i]! << 8) | payload[lo + i]!;
     }
-    return { halves, coverage };
+    return { halves, coverage, ...(wet ? { wet } : {}) };
   } catch {
     return null;
   }

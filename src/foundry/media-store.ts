@@ -7,7 +7,7 @@ import { MAX_MEDIA_CHUNKS, parseChunkKey } from "../media/layout.ts";
 import { deletion, filePicker, worldId } from "./compat.ts";
 
 /**
- * Dry wet-media paint lives in files, not in the Scene document:
+ * Paint checkpoints live in files, not in the Scene document:
  *
  *   worlds/<world>/canvas-scribble/<scene>/<cx>_<cy>_<f>.json  immutable bake (see media/bake.ts)
  *   flags.canvas-scribble.media.paper                       the scene's paper
@@ -37,6 +37,8 @@ export interface MediaChunkMeta {
 export interface MediaFlags {
   paper: PaperId | null;
   chunks: Map<string, MediaChunkMeta>;
+  clearedAt: number;
+  saved: string[];
 }
 
 const SCENE_ID = /^[A-Za-z0-9]{1,32}$/;
@@ -48,9 +50,12 @@ export const flagKey = (key: string): string => `c${key}`;
 /** Validated media flags of a scene. */
 export function readMedia(scene: FoundryScene): MediaFlags {
   const raw = (scene.flags?.[MODULE_ID] as Record<string, unknown> | undefined)?.[FLAG_MEDIA];
-  const out: MediaFlags = { paper: null, chunks: new Map() };
+  const out: MediaFlags = { paper: null, chunks: new Map(), clearedAt: 0, saved: [] };
   if (!raw || typeof raw !== "object") return out;
   const r = raw as Record<string, unknown>;
+  if (typeof r.clearedAt === "number" && Number.isFinite(r.clearedAt) && r.clearedAt >= 0) out.clearedAt = r.clearedAt;
+  if (Array.isArray(r.saved))
+    out.saved = r.saved.filter((id) => typeof id === "string" && /^[A-Za-z0-9_-]{1,32}$/.test(id)).slice(-512);
   if (typeof r.paper === "string" && (PAPER_IDS as readonly string[]).includes(r.paper)) out.paper = r.paper as PaperId;
   const chunks = r.chunks;
   if (!chunks || typeof chunks !== "object") return out;
@@ -110,6 +115,8 @@ interface SceneQueue {
   sets: Map<string, MediaChunkMeta>;
   deletes: Set<string>;
   clear: boolean;
+  clearedAt: number | null;
+  saved: Set<string>;
   paper: PaperId | null;
   failures: number;
 }
@@ -145,6 +152,8 @@ export class MediaWriter {
         sets: new Map(),
         deletes: new Set(),
         clear: false,
+        clearedAt: null,
+        saved: new Set(),
         paper: null,
         failures: 0,
       };
@@ -293,7 +302,7 @@ export class MediaWriter {
   }
 
   /** Forget every bake of a scene. The files stay on disk. */
-  clear(scene: FoundryScene): void {
+  clear(scene: FoundryScene, at = game.time?.serverTime ?? Date.now()): void {
     for (const token of this.#failedUploads) if (token.startsWith(`${scene.id}/`)) this.#failedUploads.delete(token);
     const generation = (this.#generation.get(scene.id) ?? 0) + 1;
     this.#generation.set(scene.id, generation);
@@ -303,12 +312,24 @@ export class MediaWriter {
     q.sets.clear();
     q.deletes.clear();
     q.clear = true;
+    q.clearedAt = at;
+    q.saved.clear();
     q.failures = 0;
     this.#schedule();
   }
 
   setPaper(scene: FoundryScene, paper: PaperId): void {
     this.#queue(scene).paper = paper;
+    this.#schedule();
+  }
+
+  /** Publish bounded receipts only after the associated files and Scene references are durable. */
+  acknowledge(scene: FoundryScene, ids: readonly string[]): void {
+    const known = new Set(readMedia(scene).saved);
+    const fresh = ids.slice(-512).filter((id) => !known.has(id));
+    if (!fresh.length) return;
+    const q = this.#queue(scene);
+    for (const id of fresh) q.saved.add(id);
     this.#schedule();
   }
 
@@ -328,6 +349,8 @@ export class MediaWriter {
     if (!next) this.#pending.set(q.scene.id, q);
     else {
       next.paper ??= q.paper;
+      next.clearedAt ??= q.clearedAt;
+      if (!next.clear) for (const id of q.saved) next.saved.add(id);
       if (!next.clear) {
         for (const [key, meta] of q.sets) if (!next.sets.has(key) && !next.deletes.has(key)) next.sets.set(key, meta);
         for (const key of q.deletes) if (!next.sets.has(key)) next.deletes.add(key);
@@ -352,6 +375,11 @@ export class MediaWriter {
         for (const key of q.deletes) if (stored.has(key)) Object.assign(data, deletion(`${base}.chunks`, flagKey(key)));
       for (const [key, meta] of q.sets) data[`${base}.chunks.${flagKey(key)}`] = meta;
       if (q.paper) data[`${base}.paper`] = q.paper;
+      if (q.clearedAt !== null) data[`${base}.clearedAt`] = q.clearedAt;
+      if (q.clear || q.saved.size) {
+        const before = q.clear ? [] : readMedia(q.scene).saved;
+        data[`${base}.saved`] = [...new Set([...before, ...q.saved])].slice(-512);
+      }
       try {
         if (!current() || !Object.keys(data).length) continue;
         // A deletion and new keys under the same object cannot share one update: clear first.

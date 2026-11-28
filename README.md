@@ -62,7 +62,7 @@ Permissions are re-checked on every receiving client against the sender ID attac
 
 Because players cannot write to Scene documents directly, permanent annotations are saved into `flags.canvas-scribble.items.<id>` by the active GM's client. If no GM is connected or the user lacks permission, the mark falls back to a 60-second temporary map mark with a notice instead of being lost. Permanent marks are capped at 1 MB (configurable) and 3,000 items per scene.
 
-Paint is permanent once it dries: the active GM's client stores each dried 256 × 256-unit area as a small file in `worlds/<world>/canvas-scribble/` and records it in the Scene flags (budget 32 MB per scene by default). Without a GM online, paint stays visible only until the scene is reloaded. The simulation runs in a background worker; a WebGL2 GPU backend is used when it passes a self-test against the CPU reference, otherwise the CPU runs it (client setting *Paint simulation*).
+Paint saves automatically while it is wet. Strokes are recorded locally from pen down for refresh recovery; the active GM saves the viewed scene after strokes and approximately every 10 seconds, including wetness and moving pigment. Reload resumes the saved simulation; time spent closed does not dry the paint. *Dry now* ends the flow and saves stable deposits. Checkpoint files live in `worlds/<world>/canvas-scribble/`, referenced by Scene flags (32 MB per scene by default). Server saves need an active GM; local recovery is limited to the same browser and reports a warning if storage is unavailable or full. The simulation runs in a background worker; a WebGL2 GPU backend is used when it passes a self-test against the CPU reference, otherwise the CPU runs it (client setting *Paint simulation*).
 
 ## Install
 

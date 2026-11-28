@@ -44,8 +44,10 @@ export type EngineIn =
   | { t: "end"; id: string }
   | { t: "undo"; id: string; req: number }
   | { t: "dryAll" }
-  /** Dry everything now and bake every chunk that was wet (scene change, "dry now"). */
+  /** Dry everything now and bake every chunk that was wet ("dry now"). */
   | { t: "flush"; req: number }
+  /** Save pending paint and live simulation state without settling it. */
+  | { t: "checkpoint"; req: number }
   | { t: "clear" }
   | { t: "bake"; key: string; req: number }
   | { t: "retryBake"; key: string }
@@ -58,9 +60,9 @@ export type EngineOut =
   | { t: "ready"; backend: "cpu" | "gpu"; note?: string }
   | { t: "display"; key: string; data: Uint8ClampedArray | null }
   | { t: "dry"; key: string; touched: number }
-  /** `data` is null when the chunk is still wet or unknown; `empty` when it holds no paint at all. */
+  /** `empty` means the chunk holds neither paint nor a wet simulation state. */
   | { t: "baked"; req: number; key: string; data: Uint8Array | null; empty: boolean; at: number }
-  | { t: "flushed"; req: number; ok?: boolean }
+  | { t: "flushed"; req: number; ok?: boolean; strokes?: string[] }
   | { t: "loaded"; key: string; ok: boolean; revision?: string; invalid?: boolean }
   | { t: "undone"; req: number; ok: boolean; removed?: string[] }
   | { t: "stats"; chunks: number; wet: number; stepMs: number; backend: string; queued: number }
@@ -145,6 +147,7 @@ export class MediaEngine {
   readonly #post: (msg: EngineOut, transfer?: Transferable[]) => void;
   readonly #backend: SimBackend;
   readonly #strokes = new Map<string, Stroke>();
+  readonly #completed = new Set<string>();
   readonly #queue: DabJob[] = [];
   readonly #meta = new Map<string, ChunkMeta>();
   readonly #wet = new Set<string>();
@@ -218,6 +221,8 @@ export class MediaEngine {
         if (!s || s.ended) return;
         for (const dab of s.walker.finish()) this.#queue.push({ stroke: s, dab, n: ++s.emitted });
         s.ended = true;
+        this.#completed.add(s.id);
+        if (this.#completed.size > MAX_COVERAGE) this.#completed.delete(this.#completed.values().next().value!);
         return;
       }
       case "undo": {
@@ -229,22 +234,24 @@ export class MediaEngine {
         this.#flushDabs(Infinity);
         for (const [key, m] of this.#meta) if (m.wet) this.#dry(key, m);
         return;
+      case "checkpoint":
       case "flush": {
         let ok = false;
         try {
           this.#flushDabs(Infinity);
-          for (const [key, m] of this.#meta) if (m.wet) this.#dry(key, m);
-          for (const [key, m] of this.#meta) if (m.needsBake) this.#postBake(msg.req, key);
+          if (msg.t === "flush") for (const [key, m] of this.#meta) if (m.wet) this.#dry(key, m);
+          for (const [key, m] of this.#meta) if (m.needsBake || m.wet) this.#postBake(msg.req, key);
           this.#displays(true);
           ok = true;
         } finally {
-          this.#post({ t: "flushed", req: msg.req, ok });
+          this.#post({ t: "flushed", req: msg.req, ok, strokes: [...this.#completed] });
         }
         return;
       }
       case "clear":
         this.#queue.length = 0;
         this.#strokes.clear();
+        this.#completed.clear();
         this.#records.length = 0;
         this.#recordEnd = this.#undoChunks = 0;
         this.#displayCursor = 0;
@@ -598,6 +605,7 @@ export class MediaEngine {
     m.wetUntil = 0;
     this.#wet.delete(key);
     m.dirty = true;
+    m.needsBake = true;
     this.#post({ t: "dry", key, touched: m.touched });
   }
 
@@ -708,6 +716,7 @@ export class MediaEngine {
     s.ended = true;
     this.#dropSnapshots(s);
     this.#strokes.delete(id);
+    this.#completed.delete(id);
     return removed;
   }
 
@@ -721,13 +730,19 @@ export class MediaEngine {
     const xy = parseChunkKey(key);
     const m = this.#meta.get(key);
     const at = m?.touched ?? 0;
-    if (!xy || !m || m.wet) {
+    if (!xy || !m) {
       this.#post({ t: "baked", req, key, data: null, empty: false, at });
       return;
     }
-    m.cold ??= this.#encode(m);
+    const checkpoint = m.wet
+      ? encodeBake(
+          this.#backend.exportDeposit(m.cx, m.cy),
+          { legacyAt: m.legacyAt, strokes: [...m.coverage.values()] },
+          { remaining: Math.max(0, m.wetUntil - this.now()), state: this.#backend.snapshot(m.cx, m.cy) },
+        )
+      : (m.cold ??= this.#encode(m));
     m.needsBake = false;
-    const data = m.cold?.slice() ?? null;
+    const data = checkpoint?.slice() ?? null;
     this.#post({ t: "baked", req, key, data, empty: !data, at }, data ? [data.buffer as ArrayBuffer] : []);
   }
 
@@ -771,9 +786,17 @@ export class MediaEngine {
     meta.coverage = coverage;
     meta.journal = replay;
     meta.lost.clear();
+    if (state.wet) {
+      this.#makeRoom(new Map([[key, xy]]));
+      this.#backend.restore(xy[0], xy[1], state.wet.state);
+      meta.cold = null;
+      meta.wet = true;
+      meta.wetUntil = this.now() + state.wet.remaining;
+      this.#wet.add(key);
+    }
     if (replay.length) {
       this.#makeRoom(new Map([[key, xy]]));
-      this.#backend.importDeposit(xy[0], xy[1], state.halves);
+      if (!state.wet) this.#backend.importDeposit(xy[0], xy[1], state.halves);
       this.#activate(
         key,
         meta,
@@ -791,7 +814,7 @@ export class MediaEngine {
         }
         this.#backend.applyDabs(this.#dabBuf, count);
       }
-    } else if (!this.#view) this.#backend.importDeposit(xy[0], xy[1], state.halves);
+    } else if (!state.wet && !this.#view) this.#backend.importDeposit(xy[0], xy[1], state.halves);
     reply(true);
   }
 }
