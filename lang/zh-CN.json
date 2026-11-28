@@ -34,7 +34,16 @@
       "Marker": "马克笔",
       "Fineliner": "单线笔",
       "Soft": "柔边笔刷",
-      "Chalk": "粉笔"
+      "Chalk": "粉笔",
+      "Flat": "矩形平头笔",
+      "Calligraphy": "平头书法笔",
+      "Bristle": "扁平排刷",
+      "Pixel": "像素方头笔",
+      "Charcoal": "方头炭笔",
+      "Airbrush": "喷枪",
+      "Watercolor": "水彩笔",
+      "Neon": "霓虹发光笔",
+      "Splatter": "喷溅笔刷"
     },
     "Highlight": {
       "Stroke": "荧光笔",

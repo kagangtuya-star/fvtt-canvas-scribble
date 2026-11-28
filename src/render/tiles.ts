@@ -1,6 +1,7 @@
 import { compositeItem } from "../brush/paint.ts";
 import { boundsIntersect } from "../core/geometry.ts";
 import type { Bounds } from "../core/geometry.ts";
+import { compareEntries } from "../core/store.ts";
 import type { Entry } from "../core/store.ts";
 import { clamp } from "../core/util.ts";
 import { CanvasTexture } from "./canvas-texture.ts";
@@ -48,11 +49,6 @@ export function tileRange(bounds: Bounds, tier: number): [x0: number, y0: number
     Math.floor(bounds[3] / size),
   ];
 }
-
-const drawnAfter = (a: Entry, b: Entry): boolean =>
-  a.item.createdAt > b.item.createdAt || (a.item.createdAt === b.item.createdAt && a.seq > b.seq);
-
-const compareEntries = (a: Entry, b: Entry): number => a.item.createdAt - b.item.createdAt || a.seq - b.seq;
 
 interface Tile {
   key: string;
@@ -128,7 +124,7 @@ export class TileCache {
     this.#sorted = null;
     for (const tile of this.#tilesTouching(entry.bounds)) {
       if (!tile.ready) continue;
-      if (tile.tier !== this.#shownTier || (tile.last && !drawnAfter(entry, tile.last))) {
+      if (tile.tier !== this.#shownTier || (tile.last && compareEntries(entry, tile.last) <= 0)) {
         tile.ready = false;
         continue;
       }
@@ -168,6 +164,13 @@ export class TileCache {
   /** Redraw everything (e.g. the visibility filter changed). */
   invalidateAll(): void {
     for (const tile of this.#tiles.values()) tile.ready = false;
+  }
+
+  /** Discard stale pictures when cached items switch to individual sprites. */
+  discardRasters(): void {
+    for (const tile of this.#tiles.values()) this.#releaseTexture(tile);
+    this.#tiles.clear();
+    this.#shownTier = 0;
   }
 
   #invalidate(bounds: Bounds): void {
@@ -334,8 +337,7 @@ export class TileCache {
   }
 
   destroy(): void {
-    for (const tile of this.#tiles.values()) this.#releaseTexture(tile);
-    this.#tiles.clear();
+    this.discardRasters();
     this.#entries.clear();
     this.#sorted = null;
     if (!this.container.destroyed) this.container.destroy({ children: true });

@@ -78,7 +78,9 @@ declare namespace PIXI {
     texture: Texture;
     width: number;
     height: number;
+    blendMode: number | string;
   }
+  const BLEND_MODES: { NORMAL: number; ADD: number; MULTIPLY: number; SCREEN: number; OVERLAY?: number };
   class Graphics extends Container {
     clear(): this;
     lineStyle(options: {

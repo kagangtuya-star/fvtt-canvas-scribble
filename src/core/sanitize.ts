@@ -1,8 +1,21 @@
 import { LIMITS } from "../constants.ts";
-import { decodePoints, encodePoints } from "./codec.ts";
+import { decodeAngles, decodePoints, encodeAngles, encodePoints } from "./codec.ts";
 import type { ZKind } from "./codec.ts";
-import { BRUSH_IDS, MAP_LAYERS, SCHEMA_VERSION, SHAPE_IDS } from "./types.ts";
-import type { EraseMask, ItemStyle, Kind, MapLayer, Mode, ScribbleItem, WireItem, WireMask } from "./types.ts";
+import { ANGLE_MODES, BLEND_MODES, BRUSH_IDS, FILL_PATTERNS, MAP_LAYERS, SCHEMA_VERSION, SHAPE_IDS } from "./types.ts";
+import type {
+  AngleMode,
+  BlendMode,
+  BrushOverride,
+  EraseMask,
+  FillPattern,
+  ItemStyle,
+  Kind,
+  MapLayer,
+  Mode,
+  ScribbleItem,
+  WireItem,
+  WireMask,
+} from "./types.ts";
 
 /**
  * Conversion between in-memory items and their wire/persisted form, plus the
@@ -13,10 +26,20 @@ import type { EraseMask, ItemStyle, Kind, MapLayer, Mode, ScribbleItem, WireItem
 export const zKindOf = (kind: Kind): ZKind => (kind === "laser" ? "time" : "pressure");
 
 export function toWire(item: ScribbleItem): WireItem {
-  const { points, erase, ...rest } = item;
+  const { points, angles, erase, ...rest } = item;
   const wire: WireItem = { ...rest, points: encodePoints(points, zKindOf(item.kind)) };
-  if (erase?.length) wire.erase = erase.map((m) => ({ size: m.size, p: encodePoints(m.points) }));
-  else delete wire.erase;
+  if (angles?.length) wire.angles = encodeAngles(angles);
+  else delete wire.angles;
+  if (erase?.length) {
+    wire.erase = erase.map((m) => {
+      const wm: WireMask = { size: m.size, p: encodePoints(m.points) };
+      if (m.tip === "rect") wm.tip = "rect";
+      if (typeof m.ang === "number") wm.ang = m.ang;
+      if (typeof m.asp === "number") wm.asp = m.asp;
+      if (typeof m.hrd === "number") wm.hrd = m.hrd;
+      return wm;
+    });
+  } else delete wire.erase;
   return wire;
 }
 
@@ -42,6 +65,9 @@ const KINDS: readonly Kind[] = ["stroke", "shape", "area", "text", "laser"];
 const num = (v: unknown, min: number, max: number, fallback: number): number =>
   typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
 
+const optNum = (v: unknown, min: number, max: number): number | undefined =>
+  typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : undefined;
+
 function toolValid(kind: Kind, tool: unknown): tool is string {
   if (typeof tool !== "string") return false;
   switch (kind) {
@@ -54,6 +80,32 @@ function toolValid(kind: Kind, tool: unknown): tool is string {
   }
 }
 
+function sanitizeBrushOverride(raw: unknown): BrushOverride | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const b = raw as Record<string, unknown>;
+  const out: BrushOverride = {};
+  const ang = optNum(b.ang, -180, 180);
+  if (ang !== undefined) out.ang = Math.round(ang * 10) / 10;
+  if (typeof b.am === "string" && (ANGLE_MODES as readonly string[]).includes(b.am)) out.am = b.am as AngleMode;
+  const asp = optNum(b.asp, 0.05, 1);
+  if (asp !== undefined) out.asp = Math.round(asp * 100) / 100;
+  const cor = optNum(b.cor, 0, 1);
+  if (cor !== undefined) out.cor = Math.round(cor * 100) / 100;
+  const hrd = optNum(b.hrd, 0, 1);
+  if (hrd !== undefined) out.hrd = Math.round(hrd * 100) / 100;
+  const flw = optNum(b.flw, 0.05, 1);
+  if (flw !== undefined) out.flw = Math.round(flw * 100) / 100;
+  const spc = optNum(b.spc, 0.08, 3);
+  if (spc !== undefined) out.spc = Math.round(spc * 100) / 100;
+  const sct = optNum(b.sct, 0, 3);
+  if (sct !== undefined) out.sct = Math.round(sct * 100) / 100;
+  const grn = optNum(b.grn, 0, 1);
+  if (grn !== undefined) out.grn = Math.round(grn * 100) / 100;
+  const rgh = optNum(b.rgh, 0, 3);
+  if (rgh !== undefined) out.rgh = Math.round(rgh * 100) / 100;
+  return Object.keys(out).length ? out : undefined;
+}
+
 function sanitizeStyle(raw: unknown): ItemStyle {
   const s = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const out: ItemStyle = {};
@@ -62,6 +114,18 @@ function sanitizeStyle(raw: unknown): ItemStyle {
   if (typeof s.fill === "number" && s.fill > 0) out.fill = num(s.fill, 0, 1, 0);
   if (s.halo === true) out.halo = true;
   if (s.closed === true) out.closed = true;
+  if (typeof s.blend === "string" && (BLEND_MODES as readonly string[]).includes(s.blend)) {
+    out.blend = s.blend as BlendMode;
+  }
+  if (
+    typeof s.fillPattern === "string" &&
+    (FILL_PATTERNS as readonly string[]).includes(s.fillPattern) &&
+    s.fillPattern !== "solid"
+  ) {
+    out.fillPattern = s.fillPattern as FillPattern;
+  }
+  const brush = sanitizeBrushOverride(s.brush);
+  if (brush) out.brush = brush;
   return out;
 }
 
@@ -92,7 +156,15 @@ function sanitizeMasks(raw: unknown, mode: Mode, ctx: SanitizeContext): EraseMas
     if (!m || typeof m !== "object") continue;
     const pts = decodePoints(m.p, "pressure", LIMITS.maxPointsPerMask);
     if (!pts || pts.length < 3 || !inExtent(pts, mode, ctx)) continue;
-    out.push({ size: num(m.size, 0.1, 5000, 10), points: pts });
+    const mask: EraseMask = { size: num(m.size, 0.1, 5000, 10), points: pts };
+    if (m.tip === "rect") mask.tip = "rect";
+    const ang = optNum(m.ang, -180, 180);
+    if (ang !== undefined) mask.ang = ang;
+    const asp = optNum(m.asp, 0.1, 1);
+    if (asp !== undefined) mask.asp = asp;
+    const hrd = optNum(m.hrd, 0, 1);
+    if (hrd !== undefined) mask.hrd = hrd;
+    out.push(mask);
   }
   return out.length ? out : undefined;
 }
@@ -117,6 +189,12 @@ export function sanitizeItem(raw: unknown, ctx: SanitizeContext): ScribbleItem |
 
   const points = decodePoints(r.points, zKindOf(kind), LIMITS.maxPointsPerItem);
   if (!points || points.length < 3 || !inExtent(points, mode, ctx)) return null;
+
+  let angles: number[] | undefined;
+  if (r.angles !== undefined) {
+    const decoded = decodeAngles(r.angles, points.length / 3);
+    if (decoded?.length === points.length / 3) angles = decoded;
+  }
 
   // Timing: createdAt within a tolerated skew of the receiver's clock.
   let createdAt = num(r.createdAt, 0, Number.MAX_SAFE_INTEGER, ctx.now);
@@ -155,6 +233,7 @@ export function sanitizeItem(raw: unknown, ctx: SanitizeContext): ScribbleItem |
     visibility: "all",
     revision: Math.trunc(num(r.revision, 0, 1e9, 0)),
   };
+  if (angles) item.angles = angles;
   if (kind === "text") {
     if (typeof r.text !== "string") return null;
     // Plain text only: strip control characters except newlines; rendered with fillText, never as HTML.

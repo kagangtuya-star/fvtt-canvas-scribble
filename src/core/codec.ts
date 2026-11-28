@@ -1,10 +1,13 @@
 /**
- * Compact point encoding for the wire and for Scene flags.
+ * Compact point & angle encoding for the wire and for Scene flags.
  *
  * Triples `[x, y, z]` are quantised (x, y to 1/10 unit; z to 1/255 for
  * pressure or to whole milliseconds for laser timing), delta-encoded,
  * zig-zag mapped and written as LEB128 varints, then base64.
  * A typical point costs 3–5 bytes instead of ~30 bytes of JSON.
+ *
+ * Optional per-point angles (radians, -PI..PI) are encoded in a parallel
+ * string using modular 8-bit delta encoding (~1 byte/point).
  *
  * Format: "1" + base64. The leading digit is the codec version.
  */
@@ -113,5 +116,79 @@ export function quantizePoints(flat: readonly number[], kind: ZKind = "pressure"
     out[i + 1] = Math.round(flat[i + 1]! * XY_SCALE) / XY_SCALE + 0;
     out[i + 2] = Math.round(flat[i + 2]! * zs) / zs + 0;
   }
+  return out;
+}
+
+/* -------------------------------------------- */
+/*  Per-point nib angles (radians, -PI..PI)     */
+/* -------------------------------------------- */
+
+const TAU = Math.PI * 2;
+const ANG_BINS = 256;
+
+/** Map angle in radians to an integer bin in [0, 255]. */
+function angleToBin(rad: number): number {
+  const norm = (((rad % TAU) + TAU) % TAU) / TAU;
+  return Math.round(norm * ANG_BINS) & 255;
+}
+
+/** Map integer bin in [0, 255] back to radians in [-PI, PI). */
+function binToAngle(bin: number): number {
+  const b = ((bin % ANG_BINS) + ANG_BINS) % ANG_BINS;
+  const rad = (b / ANG_BINS) * TAU;
+  return (rad >= Math.PI ? rad - TAU : rad) + 0;
+}
+
+/** Shortest signed modular delta in [-128, 127]. */
+function wrapDelta(diff: number): number {
+  let d = ((diff % ANG_BINS) + ANG_BINS) % ANG_BINS;
+  if (d >= 128) d -= ANG_BINS;
+  return d;
+}
+
+export function encodeAngles(angles: readonly number[]): string {
+  const bytes: number[] = [];
+  let prev = 0;
+  for (let i = 0; i < angles.length; i++) {
+    const cur = angleToBin(angles[i]!);
+    writeVarint(bytes, wrapDelta(cur - prev));
+    prev = cur;
+  }
+  return "1" + toBase64(Uint8Array.from(bytes));
+}
+
+export function decodeAngles(text: unknown, maxPoints = Infinity): number[] | null {
+  if (typeof text !== "string" || text[0] !== "1") return null;
+  let bytes: Uint8Array;
+  try {
+    bytes = fromBase64(text.slice(1));
+  } catch {
+    return null;
+  }
+  const out: number[] = [];
+  let acc = 0;
+  let value = 0;
+  let shift = 0;
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i]!;
+    if (shift > 28) return null;
+    value |= (b & 0x7f) << shift;
+    if (b & 0x80) {
+      shift += 7;
+      continue;
+    }
+    acc = (acc + unzigzag(value)) & 255;
+    value = 0;
+    shift = 0;
+    out.push(binToAngle(acc));
+    if (out.length >= maxPoints) break;
+  }
+  if (shift !== 0) return null;
+  return out;
+}
+
+export function quantizeAngles(angles: readonly number[]): number[] {
+  const out = new Array<number>(angles.length);
+  for (let i = 0; i < angles.length; i++) out[i] = binToAngle(angleToBin(angles[i]!));
   return out;
 }

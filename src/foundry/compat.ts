@@ -76,3 +76,24 @@ export function escapeHTML(text: string): string {
 export function controlsAreRecord(controls: unknown): controls is Record<string, unknown> {
   return !!controls && typeof controls === "object" && !Array.isArray(controls);
 }
+
+/** Map a CanvasScribble blend mode to the active PIXI version's Sprite `blendMode`. */
+export function pixiBlendMode(blend: "normal" | "multiply" | "screen" | "overlay" | "lighter"): number | string {
+  const bm = (globalThis as { PIXI?: { BLEND_MODES?: Record<string, number> } }).PIXI?.BLEND_MODES;
+  if (bm) {
+    switch (blend) {
+      case "multiply":
+        return bm.MULTIPLY ?? 2;
+      case "screen":
+        return bm.SCREEN ?? 3;
+      case "overlay":
+        return bm.OVERLAY ?? bm.NORMAL ?? 0;
+      case "lighter":
+        return bm.ADD ?? 1;
+      default:
+        return bm.NORMAL ?? 0;
+    }
+  }
+  // PIXI v8 string blend modes
+  return blend === "lighter" ? "add" : blend;
+}

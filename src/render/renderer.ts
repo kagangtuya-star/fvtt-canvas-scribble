@@ -1,5 +1,7 @@
+import { effectiveBlend } from "../brush/paint.ts";
 import type { Bounds } from "../core/geometry.ts";
 import type { MapSpace, ScreenSpace, Viewport } from "../core/space.ts";
+import { compareEntries } from "../core/store.ts";
 import type { Entry, ItemStore, StoreEvent } from "../core/store.ts";
 import type { MapLayer, ScribbleItem } from "../core/types.ts";
 import { drawLasers } from "./laser.ts";
@@ -62,6 +64,8 @@ class Root {
   readonly tiles: TileCache | null;
   readonly sprites = new SpriteSet();
   readonly lasers = new Map<string, Entry>();
+  readonly #stored = new Map<string, Entry>();
+  #firstBlend: Entry | undefined;
   #laserGraphics: PIXI.Graphics | null = null;
 
   constructor(name: string, withTiles: boolean) {
@@ -75,33 +79,84 @@ class Root {
   }
 
   get empty(): boolean {
-    return !this.sprites.size && !this.lasers.size && !(this.tiles?.size ?? 0);
+    return !this.sprites.size && !this.lasers.size && !this.#stored.size;
   }
 
-  put(entry: Entry, previous: Entry | undefined): void {
+  get storedCount(): number {
+    return this.#stored.size;
+  }
+
+  put(entry: Entry): void {
     const id = entry.item.id;
     if (entry.item.kind === "laser") {
       this.lasers.set(id, entry);
       return;
     }
-    if (entry.state === "stored" && this.tiles) {
-      if (previous?.state === "stored") this.tiles.update(entry, previous);
-      else this.tiles.add(entry);
-      if (this.sprites.has(id)) this.sprites.retire(id);
-      return;
-    }
-    if (previous?.state === "stored") this.tiles?.remove(id);
+    if (this.#routeStored(id, entry.state === "stored" ? entry : undefined)) return;
     this.sprites.put(entry);
+  }
+
+  /** Flatten only the normal strokes below the first blend, preserving painter order above it. */
+  #routeStored(id: string, entry?: Entry): boolean {
+    const tiles = this.tiles;
+    if (!tiles) return false;
+    const before = this.#stored.get(id);
+    if (!before && !entry) return false;
+    const oldFirst = this.#firstBlend;
+    const cached = (e: Entry, first?: Entry) => !first || compareEntries(e, first) < 0;
+    if (entry) this.#stored.set(id, entry);
+    else this.#stored.delete(id);
+
+    const blends = entry && effectiveBlend(entry.item) !== "normal";
+    if (oldFirst?.item.id === id && (!blends || compareEntries(oldFirst, entry!) !== 0)) {
+      this.#firstBlend = undefined;
+      for (const candidate of this.#stored.values()) {
+        if (effectiveBlend(candidate.item) !== "normal" && (!this.#firstBlend || cached(candidate, this.#firstBlend)))
+          this.#firstBlend = candidate;
+      }
+    } else if (blends && cached(entry, oldFirst)) this.#firstBlend = entry;
+
+    let discardRasters = false;
+    const first = this.#firstBlend;
+    if (first !== oldFirst) {
+      for (const other of this.#stored.values()) {
+        if (other.item.id === id) continue;
+        const was = cached(other, oldFirst);
+        if (was === cached(other, first)) continue;
+        if (was) {
+          tiles.remove(other.item.id);
+          this.sprites.put(other);
+          discardRasters = true;
+        } else {
+          tiles.add(other);
+          this.sprites.retire(other.item.id);
+        }
+      }
+    }
+    const wasCached = before && cached(before, oldFirst);
+    const isCached = entry && cached(entry, first);
+    if (isCached) {
+      if (wasCached) tiles.update(entry, before);
+      else tiles.add(entry);
+      this.sprites.retire(id);
+    } else if (wasCached) {
+      tiles.remove(id);
+      if (entry) discardRasters = true;
+    }
+    if (discardRasters) tiles.discardRasters();
+    return !!isCached;
   }
 
   remove(id: string): void {
     this.lasers.delete(id);
+    this.#routeStored(id);
     this.sprites.remove(id);
-    this.tiles?.remove(id);
   }
 
   clear(): void {
     this.lasers.clear();
+    this.#stored.clear();
+    this.#firstBlend = undefined;
     this.sprites.clear();
     this.tiles?.clear();
     this.#laserGraphics?.clear();
@@ -172,7 +227,7 @@ export class SceneRenderer {
     this.#screenRoot.interactiveChildren = false;
     targets.overlay.addChild(this.#screenRoot);
     this.#off = host.store.on((e) => this.#onStore(e));
-    for (const entry of host.store.values()) this.#route(entry, undefined);
+    for (const entry of host.store.values()) this.#route(entry);
     targets.ticker.add(this.#tick, this, PIXI.UPDATE_PRIORITY.NORMAL);
   }
 
@@ -191,7 +246,7 @@ export class SceneRenderer {
   refresh(): void {
     for (const root of this.#roots()) root.clear();
     this.#where.clear();
-    for (const entry of this.#host.store.values()) this.#route(entry, undefined);
+    for (const entry of this.#host.store.values()) this.#route(entry);
   }
 
   *#roots(): Generator<Root> {
@@ -216,10 +271,10 @@ export class SceneRenderer {
     if (this.#destroyed) return;
     switch (e.type) {
       case "add":
-        this.#route(e.entry, undefined);
+        this.#route(e.entry);
         break;
       case "update":
-        this.#route(e.entry, e.previous);
+        this.#route(e.entry);
         break;
       case "remove":
         this.#unroute(e.entry.item.id);
@@ -231,7 +286,7 @@ export class SceneRenderer {
     }
   }
 
-  #route(entry: Entry, previous: Entry | undefined): void {
+  #route(entry: Entry): void {
     const id = entry.item.id;
     if (!this.#host.shows(entry.item)) {
       this.#unroute(id);
@@ -239,11 +294,8 @@ export class SceneRenderer {
     }
     const root = this.#rootFor(entry.item);
     const before = this.#where.get(id);
-    if (before && before !== root) {
-      before.remove(id);
-      previous = undefined;
-    } else if (!before) previous = undefined;
-    root.put(entry, previous);
+    if (before && before !== root) before.remove(id);
+    root.put(entry);
     this.#where.set(id, root);
   }
 
@@ -333,7 +385,7 @@ export class SceneRenderer {
     let lasers = 0;
     for (const root of this.#roots()) {
       tiles += root.tiles?.textureCount ?? 0;
-      stored += root.tiles?.size ?? 0;
+      stored += root.storedCount;
       sprites += root.sprites.size;
       lasers += root.lasers.size;
     }

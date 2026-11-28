@@ -1,8 +1,10 @@
-import { paintItemLayer } from "../brush/paint.ts";
+import { effectiveBlend, paintItemLayer } from "../brush/paint.ts";
 import { boundsIntersect } from "../core/geometry.ts";
 import type { Bounds } from "../core/geometry.ts";
 import { lifeAlpha } from "../core/lifetime.ts";
+import { compareEntries } from "../core/store.ts";
 import type { Entry } from "../core/store.ts";
+import { pixiBlendMode } from "../foundry/compat.ts";
 import { CanvasTexture } from "./canvas-texture.ts";
 import { stats } from "./stats.ts";
 
@@ -26,6 +28,7 @@ export interface ItemSprite {
   sprite: PIXI.Sprite | null;
   /** Raster density (device px per unit) of the current texture. */
   scale: number;
+  order: number;
   dirty: boolean;
   /** Being replaced by a cache tile: removed after the tiles' next frame. */
   retiring: boolean;
@@ -45,12 +48,13 @@ export interface SpriteFrame {
 export class SpriteSet {
   readonly container: PIXI.Container;
   readonly #sprites = new Map<string, ItemSprite>();
+  #orderDirty = false;
 
   constructor() {
     this.container = new PIXI.Container();
     this.container.eventMode = "none";
     this.container.interactiveChildren = false;
-    // Local insertion order: newer items above older ones.
+    // Match the tile cache's drawing order for sprites layered above cached strokes.
     this.container.sortableChildren = true;
   }
 
@@ -65,12 +69,22 @@ export class SpriteSet {
   put(entry: Entry): void {
     const current = this.#sprites.get(entry.item.id);
     if (current) {
+      if (compareEntries(entry, current.entry) !== 0) this.#orderDirty = true;
       current.entry = entry;
       current.dirty = true;
       current.retiring = false;
       return;
     }
-    this.#sprites.set(entry.item.id, { entry, tex: null, sprite: null, scale: 0, dirty: true, retiring: false });
+    this.#sprites.set(entry.item.id, {
+      entry,
+      tex: null,
+      sprite: null,
+      scale: 0,
+      order: 0,
+      dirty: true,
+      retiring: false,
+    });
+    this.#orderDirty = true;
     stats.itemSprites++;
   }
 
@@ -88,12 +102,19 @@ export class SpriteSet {
     const s = this.#sprites.get(id);
     if (!s) return;
     this.#sprites.delete(id);
+    this.#releaseRaster(s);
+    stats.itemSprites--;
+  }
+
+  #releaseRaster(s: ItemSprite): void {
     if (s.sprite && !s.sprite.destroyed) {
       s.sprite.parent?.removeChild(s.sprite);
       s.sprite.destroy();
     }
     s.tex?.destroy();
-    stats.itemSprites--;
+    s.sprite = null;
+    s.tex = null;
+    s.scale = 0;
   }
 
   clear(): void {
@@ -103,6 +124,14 @@ export class SpriteSet {
   /** Update alpha, culling and rasters. Returns `true` when raster work was deferred. */
   frame(f: SpriteFrame): boolean {
     let deferred = false;
+    if (this.#orderDirty) {
+      const ordered = [...this.#sprites.values()].sort((a, b) => compareEntries(a.entry, b.entry));
+      ordered.forEach((s, i) => {
+        s.order = i;
+        if (s.sprite) s.sprite.zIndex = i;
+      });
+      this.#orderDirty = false;
+    }
     // Live strokes first: they are what the user is looking at.
     const list = [...this.#sprites.values()].sort(
       (a, b) => Number(b.entry.state === "live") - Number(a.entry.state === "live"),
@@ -114,13 +143,14 @@ export class SpriteSet {
       const alpha = live ? item.opacity : item.opacity * lifeAlpha(item, f.now);
       const inView = !f.view || boundsIntersect(s.entry.bounds, f.view);
       if (alpha <= 0 || !inView) {
-        if (s.sprite) s.sprite.visible = false;
+        if (!inView && state === "stored" && s.tex) this.#releaseRaster(s);
+        else if (s.sprite) s.sprite.visible = false;
         continue;
       }
       const rescale = s.scale > 0 && Math.abs(Math.log(f.scale / s.scale)) > Math.log1p(f.tolerance) + 1e-9;
       if (!s.tex || s.dirty || rescale) {
-        // Never-shown items and live strokes are always painted; re-rasters wait for the budget.
-        const urgent = !s.tex || (live && s.dirty);
+        // Live input is urgent; saved sprites share the frame budget with the tile cache.
+        const urgent = state !== "stored" && (!s.tex || (live && s.dirty));
         if (urgent || rastered === 0 || performance.now() < f.deadline) {
           this.#raster(s, f.scale);
           rastered++;
@@ -153,18 +183,22 @@ export class SpriteSet {
       w = Math.min(MAX_EDGE + 2 * PAD, Math.ceil(w / LIVE_STEP) * LIVE_STEP);
       h = Math.min(MAX_EDGE + 2 * PAD, Math.ceil(h / LIVE_STEP) * LIVE_STEP);
     }
+
     if (!s.tex) s.tex = new CanvasTexture(w, h);
     else if (live && s.tex.width >= w && s.tex.height >= h && s.tex.width * s.tex.height <= 4 * w * h) s.tex.clear();
     else s.tex.resize(w, h);
+
+    // A new sample can change an already painted spline segment and its dabs.
     paintItemLayer(s.tex.ctx, item, { scale, ox: PAD - b[0] * scale, oy: PAD - b[1] * scale }, live);
     s.tex.upload();
     const texture = s.tex.texture;
     if (!s.sprite) {
       s.sprite = new PIXI.Sprite(texture);
       s.sprite.eventMode = "none";
-      s.sprite.zIndex = s.entry.seq;
+      s.sprite.zIndex = s.order;
       this.container.addChild(s.sprite);
     } else if (s.sprite.texture !== texture) s.sprite.texture = texture;
+    s.sprite.blendMode = pixiBlendMode(effectiveBlend(item));
     s.sprite.position.set(b[0] - PAD / scale, b[1] - PAD / scale);
     s.sprite.scale.set(1 / scale);
     s.scale = target;

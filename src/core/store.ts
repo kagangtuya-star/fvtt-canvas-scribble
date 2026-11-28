@@ -1,8 +1,9 @@
+import { BRUSHES, resolveBrushParams } from "../brush/brushes.ts";
 import { LIMITS } from "../constants.ts";
 import { boundsOf } from "./geometry.ts";
 import type { Bounds } from "./geometry.ts";
 import { goneAt } from "./lifetime.ts";
-import type { ScribbleItem } from "./types.ts";
+import type { BrushId, ScribbleItem } from "./types.ts";
 
 /**
  * Where an item currently lives:
@@ -22,6 +23,8 @@ export interface Entry {
   readonly seq: number;
 }
 
+export const compareEntries = (a: Entry, b: Entry): number => a.item.createdAt - b.item.createdAt || a.seq - b.seq;
+
 export type StoreEvent =
   | { type: "add"; entry: Entry }
   | { type: "update"; entry: Entry; previous: Entry }
@@ -31,9 +34,21 @@ export type StoreEvent =
 /** Bounds used for culling and hit tests: geometry padded by the stroke/arrow/text extent. */
 export function itemBounds(item: ScribbleItem): Bounds {
   let pad = item.size * 0.75 + 2;
+  if (item.kind === "stroke") {
+    const brush = BRUSHES[item.tool as BrushId];
+    if (brush) {
+      const p = resolveBrushParams(brush, item.style.brush);
+      if (brush.renderer === "chisel") pad += item.size * 0.85;
+      if (brush.renderer === "soft" || brush.renderer === "neon") pad += item.size * (brush.softness * 1.8 + 0.5);
+      if (brush.renderer === "watercolor") pad += item.size * 0.6;
+      if (p.scatter > 0) pad += item.size * (p.scatter + 0.5);
+      if (p.hardness < 0.6) pad += item.size * (1 - p.hardness) * 0.8;
+      if (brush.pixelAligned) pad += item.size;
+    }
+  }
   if (item.kind === "shape" && item.tool === "arrow") pad += item.size * 5;
   if (item.style.head && item.style.head !== "none") pad += item.size * 5;
-  if (item.tool === "highlighter") pad += item.size * 1.5;
+  if (item.style.brush?.rgh) pad += item.size * (item.style.brush.rgh + 1);
   if (item.kind === "text") {
     const lines = (item.text ?? "").split("\n");
     const longest = Math.max(...lines.map((l) => l.length), 1);
@@ -83,7 +98,7 @@ export class ItemStore {
   /** Entries in drawing order (oldest first). */
   ordered(filter?: (e: Entry) => boolean): Entry[] {
     const list = [...this.#entries.values()].filter((e) => !filter || filter(e));
-    return list.sort((a, b) => a.item.createdAt - b.item.createdAt || a.seq - b.seq);
+    return list.sort(compareEntries);
   }
 
   /** Insert or replace. Returns the stored entry. */

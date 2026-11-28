@@ -34,7 +34,16 @@
       "Marker": "Marker",
       "Fineliner": "Monoline",
       "Soft": "Soft brush",
-      "Chalk": "Chalk"
+      "Chalk": "Chalk",
+      "Flat": "Flat rect",
+      "Calligraphy": "Calligraphy",
+      "Bristle": "Flat bristle",
+      "Pixel": "Pixel square",
+      "Charcoal": "Charcoal",
+      "Airbrush": "Airbrush",
+      "Watercolor": "Watercolor",
+      "Neon": "Neon glow",
+      "Splatter": "Splatter"
     },
     "Highlight": {
       "Stroke": "Highlighter",
