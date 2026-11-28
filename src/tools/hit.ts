@@ -5,7 +5,7 @@ import type { ScribbleItem } from "../core/types.ts";
 import { ellipsePolyline, rectPolyline } from "../brush/shapes.ts";
 
 /** Geometry used for hit tests: a flat `[x, y, z]` polyline and whether it is closed/filled. */
-function outlineOf(item: ScribbleItem): { flat: readonly number[]; closed: boolean; filled: boolean } {
+export function outlineOf(item: ScribbleItem): { flat: readonly number[]; closed: boolean; filled: boolean } {
   if (item.kind === "shape") {
     switch (item.tool) {
       case "rect":
