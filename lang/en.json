@@ -17,7 +17,8 @@
       "Text": "Text",
       "Eraser": "Eraser",
       "Select": "Select & transform",
-      "Eyedropper": "Eyedropper (I)"
+      "Eyedropper": "Eyedropper (I)",
+      "Paint": "Paint (wet media)"
     },
     "Mode": {
       "Screen": {
@@ -248,6 +249,10 @@
       "Permanent": {
         "Name": "All permanent annotations",
         "Hint": "Every saved mark in this scene"
+      },
+      "Media": {
+        "Name": "All wet-media paint",
+        "Hint": "Every painted area of this scene"
       }
     },
     "Notify": {
@@ -263,7 +268,18 @@
       "MaskLimit": "Some marks have been partially erased too many times; erase them whole instead.",
       "NothingToUndo": "Nothing to undo.",
       "NothingToRedo": "Nothing to redo.",
-      "ColorPicked": "Picked colour {color}."
+      "ColorPicked": "Picked colour {color}.",
+      "NoMediaPermission": "Your role cannot paint with wet media.",
+      "MediaUndoFailed": "That stroke cannot be undone any more: other paint has touched it since.",
+      "MediaBudget": "This scene's storage budget for paint is full. Clear some paint or raise the budget in the settings.",
+      "MediaTooMany": "This scene has reached the maximum number of painted areas.",
+      "MediaUnavailable": "Paint cannot be saved: file uploads are not available on this server.",
+      "MediaUploadFailed": "Saving paint failed (see console).",
+      "MediaLoadFailed": "Some saved paint could not be read (see console). Existing files have not been deleted.",
+      "MediaMissing": "Some saved paint files are missing and have been skipped. You can keep painting; missing paint needs a backup to restore.",
+      "MediaSaved": "Paint is dry and saved.",
+      "MediaSaveFailed": "Paint has not been fully saved. Keep this page open and try Dry now again.",
+      "MediaNoGM": "No GM is online: wet paint is shown but will not be kept."
     },
     "Settings": {
       "PermScreen": {
@@ -319,6 +335,29 @@
       "Debug": {
         "Name": "Debug overlay",
         "Hint": "Show render, cache and network counters, and log protocol messages to the console."
+      },
+      "PermMedia": {
+        "Name": "Wet-media painting: minimum role",
+        "Hint": "Who may use the Paint tool. Dry paint is saved by the GM's client as files in the world folder."
+      },
+      "MediaBudget": {
+        "Name": "Paint storage per scene (MB)",
+        "Hint": "Disk space the dry paint of one scene may use."
+      },
+      "MediaDrying": {
+        "Name": "Paint drying speed",
+        "Hint": "1 = watercolour dries in about 45 s and oil in about 4 min; 2 = twice as fast."
+      },
+      "MediaPaper": {
+        "Name": "Default paper",
+        "Hint": "Paper of scenes that have not chosen one (the GM can change it per scene in the Paint tool)."
+      },
+      "MediaBackend": {
+        "Name": "Paint simulation",
+        "Hint": "Where this client runs the wet-media simulation. Auto uses the GPU after a self-test and falls back to the CPU.",
+        "Auto": "Automatic",
+        "Gpu": "GPU (WebGL2)",
+        "Cpu": "CPU"
       }
     },
     "Keys": {
@@ -377,6 +416,52 @@
       "Toggle": {
         "Name": "Toggle CanvasScribble layer",
         "Hint": "Switch between the CanvasScribble layer and the token layer."
+      }
+    },
+    "Media": {
+      "Title": "Wet media",
+      "Pigment": "Pigment",
+      "InkDensity": "Ink density",
+      "Water": "Water",
+      "Reset": "Reset loads",
+      "PaperLabel": "Paper of this scene",
+      "PaperGM": "Only the GM's client can change the paper.",
+      "DryNow": "Dry now",
+      "Saving": "Saving paint…",
+      "Status": "{backend} simulation · {wet} wet / {chunks} active areas",
+      "Brush": {
+        "Watercolor": "Watercolour",
+        "Wash": "Wash",
+        "Ink": "Ink",
+        "Gouache": "Gouache",
+        "Oil": "Oil",
+        "Water": "Clear water",
+        "Smudge": "Blender",
+        "Sponge": "Sponge"
+      },
+      "Hint": {
+        "Watercolor": "Transparent pigment that flows in the water, granulates in the paper's tooth and dries with darker edges.",
+        "Wash": "Lots of water, little pigment: broad, even washes. Paint into a wet wash for soft blooms.",
+        "Ink": "Staining ink: bleeds along the paper fibres, the density sets light or dark ink, dry brush leaves flying white.",
+        "Gouache": "Opaque body colour: covers what is below and mixes like real paint.",
+        "Oil": "Opaque and slow to dry: stays workable for minutes, drags and blends with the paint it touches.",
+        "Water": "Re-wets dry paint, makes blooms and lifts colour that does not stain.",
+        "Smudge": "Carries no paint of its own: drags and mixes wet paint.",
+        "Sponge": "Soaks up water and wet paint, lifts colour that does not stain."
+      },
+      "Paper": {
+        "Cold": "Cold-pressed",
+        "Hot": "Hot-pressed",
+        "Rough": "Rough",
+        "Xuan": "Xuan paper",
+        "Canvas": "Canvas"
+      },
+      "PaperHint": {
+        "Cold": "Watercolour paper with a medium tooth.",
+        "Hot": "Smooth, slow-absorbing paper: crisp edges, little granulation.",
+        "Rough": "Heavy tooth: strong granulation and dry-brush texture.",
+        "Xuan": "Thin, very absorbent rice paper: ink bleeds along the fibres.",
+        "Canvas": "Primed canvas weave: no absorption, for gouache and oil."
       }
     }
   }

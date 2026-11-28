@@ -4,6 +4,7 @@ import type { Modifiers } from "./brush/shapes.ts";
 import { LIMITS, PENDING_TIMEOUT_MS } from "./constants.ts";
 import { decodeAngles, decodePoints, quantizeAngles, quantizePoints } from "./core/codec.ts";
 import { boundsOf, simplifyToLimit } from "./core/geometry.ts";
+import type { Bounds } from "./core/geometry.ts";
 import { History } from "./core/history.ts";
 import type { Command, HistoryExecutor } from "./core/history.ts";
 import { goneAt } from "./core/lifetime.ts";
@@ -22,11 +23,23 @@ import { activeGM, userColor, viewedLevel } from "./foundry/compat.ts";
 import { readStored, rawItems, sceneRef, SceneWriter } from "./foundry/persistence.ts";
 import * as settings from "./foundry/settings.ts";
 import { t, tf } from "./i18n.ts";
+import { MEDIA_BRUSHES, resolveMediaParams } from "./media/brushes.ts";
+import { MediaController } from "./media/controller.ts";
+import type { MediaMessage } from "./media/controller.ts";
+import { MAX_MEDIA_SIZE } from "./media/ops.ts";
 import { LiveSender, Net } from "./net/net.ts";
 import type { Inbound, SocketLike } from "./net/net.ts";
 import type { ClearScope, Message } from "./net/protocol.ts";
 import type { RenderHost } from "./render/renderer.ts";
-import { activeBrushId, brushBlend, brushOpacity, normalizePrefs, pushRecent, sizeKey } from "./state/prefs.ts";
+import {
+  activeBrushId,
+  brushBlend,
+  brushOpacity,
+  MEDIA_UI_SIZE,
+  normalizePrefs,
+  pushRecent,
+  sizeKey,
+} from "./state/prefs.ts";
 import type { Prefs, ToolId } from "./state/prefs.ts";
 import { sampleColorAt } from "./tools/eyedropper.ts";
 import { hitItem, hitPath } from "./tools/hit.ts";
@@ -41,6 +54,7 @@ import {
   toSpace,
 } from "./tools/gestures.ts";
 import type { ClientSample, Gesture, Target, ToolHost } from "./tools/gestures.ts";
+import { MediaGesture } from "./tools/media-gesture.ts";
 
 /** Temporary hold-to-draw override (keybindings). */
 export type HoldMode = "screen" | "map" | "laser" | "eraser";
@@ -73,6 +87,8 @@ export class Session implements ToolHost, RenderHost {
   readonly net: Net;
   readonly #live: LiveSender;
   readonly writer: SceneWriter;
+  /** Wet-media simulation (paint tool). */
+  readonly media: MediaController;
   prefs: Prefs;
   scene: FoundryScene | null = null;
   #map: MapSpace | null = null;
@@ -130,6 +146,8 @@ export class Session implements ToolHost, RenderHost {
       console.error("CanvasScribble | Scene write failed", err);
       this.notify("error", "Notify.SaveFailed");
     };
+    this.media = new MediaController(this);
+    this.media.onChange = () => this.changed();
   }
 
   /* -------------------------------------------- */
@@ -168,6 +186,10 @@ export class Session implements ToolHost, RenderHost {
     return activeGM()?.id === game.user.id;
   }
 
+  mediaView(bounds: Bounds): void {
+    this.media.view(bounds);
+  }
+
   notify(level: Level, key: string, data?: Record<string, unknown>): void {
     const now = performance.now();
     if (now - (this.#notified.get(key) ?? -Infinity) < 3000) return;
@@ -196,6 +218,7 @@ export class Session implements ToolHost, RenderHost {
       for (const item of stash.items) if (!this.store.has(item.id) && now < goneAt(item)) this.store.put(item, "temp");
     }
     this.net.send({ t: "q" });
+    this.media.attach(scene);
     this.#housekeeping = setInterval(() => this.#housekeep(), 500);
     this.changed();
   }
@@ -206,6 +229,7 @@ export class Session implements ToolHost, RenderHost {
       this.#stash = { scene: this.scene.id, items };
     }
     this.cancelGesture();
+    this.media.detach();
     this.setEditingText(null);
     this.selectedId = null;
     this.#live.clear();
@@ -294,6 +318,7 @@ export class Session implements ToolHost, RenderHost {
     if (!mine) return;
     if (flags["canvas-scribble"]?.ref) this.rebuildSpaces();
     this.syncStored();
+    this.media.onSceneUpdate(scene, changes);
   }
 
   #housekeep(): void {
@@ -316,6 +341,7 @@ export class Session implements ToolHost, RenderHost {
     for (const entry of [...this.store.values()]) {
       if (entry.state === "live" && entry.item.author === userId) this.store.remove(entry.item.id);
     }
+    this.media.onUserGone(userId);
   }
 
   /* -------------------------------------------- */
@@ -576,7 +602,13 @@ export class Session implements ToolHost, RenderHost {
     switch (this.hold) {
       case "screen":
       case "map": {
-        const tool = p.tool === "eraser" || p.tool === "text" || p.tool === "laser" ? "draw" : p.tool;
+        const tool =
+          p.tool === "eraser" ||
+          p.tool === "text" ||
+          p.tool === "laser" ||
+          (p.tool === "paint" && this.hold === "screen")
+            ? "draw"
+            : p.tool;
         return { tool, mode: this.hold };
       }
       case "laser":
@@ -584,7 +616,8 @@ export class Session implements ToolHost, RenderHost {
       case "eraser":
         return { tool: "eraser", mode: p.mode };
       default:
-        return { tool: p.tool, mode: p.mode };
+        // Wet media only exists on the map.
+        return { tool: p.tool, mode: p.tool === "paint" && this.#map ? "map" : p.mode };
     }
   }
 
@@ -630,6 +663,7 @@ export class Session implements ToolHost, RenderHost {
       this.selectedId = null;
       this.changed();
     }
+    if (tool === "paint") return this.#paintDown(s);
     const action: Action = mode === "map" ? "map" : "screen";
     if (!this.can(action)) {
       this.notify("warn", mode === "map" ? "Notify.NoMapPermission" : "Notify.NoScreenPermission");
@@ -681,6 +715,29 @@ export class Session implements ToolHost, RenderHost {
         return true;
     }
     return !!this.#gesture;
+  }
+
+  #paintDown(s: ClientSample): boolean {
+    if (!this.can("media")) {
+      this.notify("warn", "Notify.NoMediaPermission");
+      return false;
+    }
+    const target = this.#target("map", s);
+    if (!target) return false;
+    const p = this.prefs;
+    const brush = MEDIA_BRUSHES[p.mediaBrush];
+    const loads = resolveMediaParams(brush, p.mediaParams[p.mediaBrush]);
+    const size = Math.min(MAX_MEDIA_SIZE, target.space.widthFor(p.mediaSizes[p.mediaBrush]));
+    const gesture = new MediaGesture(
+      this.media,
+      { ...target, symmetry: undefined, snapStep: 0 },
+      { brush: brush.id, color: this.color(), size, pigment: loads.pigment, water: loads.water },
+      s,
+      this.pressureMode(),
+    );
+    if (!gesture.active) return false;
+    this.#gesture = gesture;
+    return true;
   }
 
   pointerMove(samples: ClientSample[], mods: Modifiers): void {
@@ -1236,8 +1293,22 @@ export class Session implements ToolHost, RenderHost {
       !!this.scene && item.scene === this.scene.id && (item.expiresAt === null || this.now() < goneAt(item)),
   };
 
+  /** Undo goes to the paint while the paint tool is active (or when it is all there is to undo). */
+  get #mediaUndo(): boolean {
+    return this.media.canUndo && (this.prefs.tool === "paint" || !this.history.canUndo);
+  }
+
+  get canUndo(): boolean {
+    return this.history.canUndo || this.media.canUndo;
+  }
+
   undo(): Command | null {
     this.cancelGesture();
+    if (this.#mediaUndo) {
+      this.media.undo();
+      this.changed();
+      return null;
+    }
     const cmd = this.history.undo(this.#executor);
     if (!cmd) this.notify("info", "Notify.NothingToUndo");
     this.changed();
@@ -1273,12 +1344,15 @@ export class Session implements ToolHost, RenderHost {
           return !temp && it.author === authorId;
         case "permanent":
           return !temp;
+        case "media":
+          return false;
       }
     });
   }
 
   /** Count of items a scope would remove right now (for the clear menu). */
   clearCount(scope: ClearScope): number {
+    if (scope === "media") return this.media.chunkCount;
     return this.#clearTargets(scope, game.user.id).length;
   }
 
@@ -1305,6 +1379,10 @@ export class Session implements ToolHost, RenderHost {
     this.net.send({ t: "c", scope });
     if (this.isRelay && (scope === "minePermanent" || scope === "permanent"))
       this.#relayClear(this.scene, scope, game.user);
+    if (scope === "media") {
+      this.media.clearLocal();
+      if (this.isRelay) this.media.relayClear(this.scene);
+    }
     // Only clearing your own marks is undoable (restoring others' marks would re-author them).
     const own = targets.map((e) => e.item).filter((i) => i.author === game.user.id);
     if (own.length && (scope === "mine" || scope === "minePermanent"))
@@ -1345,7 +1423,7 @@ export class Session implements ToolHost, RenderHost {
   #receive({ msg, sender }: Inbound): void {
     const here = !!this.scene && msg.scene === this.scene.id;
     const relay = this.isRelay;
-    if (!here && !relay) return;
+    if (!here && !relay && msg.t !== "mu" && !(msg.t === "c" && msg.scope === "media")) return;
     const scene = here ? this.scene! : game.scenes?.get(msg.scene);
     if (!scene) return;
     const th = settings.thresholds();
@@ -1479,6 +1557,10 @@ export class Session implements ToolHost, RenderHost {
           }
         }
         if (relay && (scope === "minePermanent" || scope === "permanent")) this.#relayClear(scene, scope, sender);
+        if (scope === "media") {
+          this.media.clearLocal(scene);
+          if (relay) this.media.relayClear(scene);
+        }
         return;
       }
       case "q": {
@@ -1501,6 +1583,14 @@ export class Session implements ToolHost, RenderHost {
         }
         return;
       }
+      case "ms":
+      case "mp":
+      case "me":
+      case "mu":
+      case "mq":
+      case "mr":
+        this.media.receive(msg as MediaMessage, sender, scene, here, may);
+        return;
       case "n": {
         if (!sender.isGM && sender.role < ROLES.GAMEMASTER) return;
         if (here && this.store.get(msg.id)?.state === "pending") this.store.remove(msg.id);
@@ -1530,6 +1620,14 @@ export class Session implements ToolHost, RenderHost {
 
   /** Change the active tool's size by `delta` UI steps (wheel / [ ]). */
   nudgeSize(delta: number): void {
+    if (this.effective().tool === "paint") {
+      const id = this.prefs.mediaBrush;
+      const cur = this.prefs.mediaSizes[id];
+      const step = Math.max(1, Math.round(cur * 0.12));
+      const next = Math.max(MEDIA_UI_SIZE.min, Math.min(MEDIA_UI_SIZE.max, cur + Math.sign(delta) * step));
+      this.setPrefs({ mediaSizes: { ...this.prefs.mediaSizes, [id]: next } });
+      return;
+    }
     const key = sizeKey(this.prefs);
     const cur = this.prefs.sizes[key];
     const step = Math.max(1, Math.round(cur * 0.12));
@@ -1563,6 +1661,7 @@ export class Session implements ToolHost, RenderHost {
 
   destroy(): void {
     this.detach();
+    this.media.destroy();
     this.net.destroy();
     this.#listeners.clear();
   }

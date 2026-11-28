@@ -5,7 +5,9 @@ import type { BrushId, MapLayer } from "../core/types.ts";
 import { userColor } from "../foundry/compat.ts";
 import { t, tf } from "../i18n.ts";
 import type { Session } from "../session.ts";
-import { activeBrushId, brushOpacity, pushRecent, sizeKey, TOOL_IDS } from "../state/prefs.ts";
+import { MEDIA_BRUSHES, MEDIA_BRUSH_IDS, PAPER_IDS, resolveMediaParams } from "../media/brushes.ts";
+import type { MediaBrushId } from "../media/brushes.ts";
+import { activeBrushId, brushOpacity, MEDIA_UI_SIZE, pushRecent, sizeKey, TOOL_IDS } from "../state/prefs.ts";
 import type { Prefs, ToolId } from "../state/prefs.ts";
 import { buildAidsMenu, buildBrushStudio } from "./brush-studio.ts";
 import { h, icon, iconButton, themeClass } from "./dom.ts";
@@ -19,6 +21,7 @@ import { Popover, togglePopover } from "./popover.ts";
 
 export const TOOL_ICON: Record<ToolId, string> = {
   draw: "fa-solid fa-pen-nib",
+  paint: "fa-solid fa-paintbrush",
   highlight: "fa-solid fa-highlighter",
   arrow: "fa-solid fa-arrow-trend-up",
   shape: "fa-regular fa-square",
@@ -248,7 +251,7 @@ export class Palette {
     style.append(colorBtn);
 
     if (tool !== "select" && tool !== "eyedropper" && (tool !== "laser" || !p.compact)) {
-      const size = p.sizes[sizeKey({ ...p, tool })];
+      const size = tool === "paint" ? p.mediaSizes[p.mediaBrush] : p.sizes[sizeKey({ ...p, tool })];
       const sizeBtn = h(
         "button",
         {
@@ -266,7 +269,9 @@ export class Palette {
         h("span", { class: "cs-num", inert: true }, String(size)),
       );
       sizeBtn.addEventListener("click", () =>
-        togglePopover(sizeBtn, () => this.#sizeMenu(), { label: t("Palette.Size") }),
+        togglePopover(sizeBtn, () => (tool === "paint" ? this.#mediaSizeMenu() : this.#sizeMenu()), {
+          label: t("Palette.Size"),
+        }),
       );
       style.append(sizeBtn);
     }
@@ -286,6 +291,22 @@ export class Palette {
       style.append(studioBtn);
     }
 
+    // Wet media: loads, paper, drying
+    if (tool === "paint") {
+      style.append(
+        iconButton(
+          "fa-solid fa-droplet",
+          t("Media.Title"),
+          (e) =>
+            togglePopover(e.currentTarget as HTMLElement, () => this.#mediaMenu(), {
+              className: "cs-popover-wide",
+              label: t("Media.Title"),
+            }),
+          { extra: "cs-chip", data: { pop: "media" } },
+        ),
+      );
+    }
+
     // Drawing Aids button (stabilizer, symmetry, quickShape, gridSnap)
     if (!p.compact && (tool === "draw" || tool === "shape" || tool === "highlight" || tool === "arrow")) {
       const aidsActive = p.stabilizer !== "off" || p.symmetry !== "none" || p.gridSnap;
@@ -298,7 +319,7 @@ export class Palette {
       style.append(aidsBtn);
     }
 
-    if (tool !== "eraser" && tool !== "select" && tool !== "eyedropper") {
+    if (tool !== "eraser" && tool !== "select" && tool !== "eyedropper" && tool !== "paint") {
       const life = tool === "laser" ? p.laserTrail : s.lifetimeFor(mode);
       const lifeBtn = h(
         "button",
@@ -317,7 +338,14 @@ export class Palette {
       );
       style.append(lifeBtn);
     }
-    if (mode === "map" && tool !== "laser" && tool !== "eraser" && tool !== "select" && tool !== "eyedropper") {
+    if (
+      mode === "map" &&
+      tool !== "laser" &&
+      tool !== "eraser" &&
+      tool !== "select" &&
+      tool !== "eyedropper" &&
+      tool !== "paint"
+    ) {
       const permanent = s.lifetimeFor("map") === 0;
       const layer = permanent ? p.layer.permanent : p.layer.temporary;
       const layerBtn = iconButton(
@@ -334,7 +362,7 @@ export class Palette {
     const actions = h(
       "div",
       { class: "cs-group" },
-      iconButton("fa-solid fa-rotate-left", t("Controls.Undo"), () => s.undo(), { disabled: !s.history.canUndo }),
+      iconButton("fa-solid fa-rotate-left", t("Controls.Undo"), () => s.undo(), { disabled: !s.canUndo }),
       iconButton("fa-solid fa-rotate-right", t("Controls.Redo"), () => s.redo(), { disabled: !s.history.canRedo }),
       iconButton(
         "fa-solid fa-trash",
@@ -452,6 +480,13 @@ export class Palette {
           );
           opt("fa-solid fa-cloud", t("Eraser.SoftNib"), p.eraserHardness < 0.9, () =>
             s.setPrefs({ eraserHardness: p.eraserHardness < 0.9 ? 1 : 0.3 }),
+          );
+        }
+        break;
+      case "paint":
+        for (const id of MEDIA_BRUSH_IDS) {
+          opt(MEDIA_BRUSHES[id].icon, t(`Media.Brush.${cap(id)}`), p.mediaBrush === id, () =>
+            s.setPrefs({ mediaBrush: id }),
           );
         }
         break;
@@ -649,6 +684,138 @@ export class Palette {
 
     if (mode === "map" && key !== "eraser")
       wrap.append(h("p", { class: "cs-hint" }, t(s.map()?.followZoom ? "Size.HintZoom" : "Size.HintGrid")));
+    return wrap;
+  }
+
+  #mediaSizeMenu(): HTMLElement {
+    const s = this.#session;
+    const id = s.prefs.mediaBrush;
+    const value = s.prefs.mediaSizes[id];
+    const wrap = h("div", { class: "cs-size" });
+    const dot = h("span", { class: "cs-size-dot" });
+    const num = h("output", { class: "cs-size-num" }, String(value));
+    const slider = h("input", {
+      type: "range",
+      min: MEDIA_UI_SIZE.min,
+      max: MEDIA_UI_SIZE.max,
+      step: 1,
+      value,
+      "aria-label": t("Palette.Size"),
+    }) as HTMLInputElement;
+    const paint = (v: number) => {
+      const space = s.space("map");
+      const css = space ? space.widthFor(v) * space.cssPerUnit() : v;
+      const d = Math.max(2, Math.min(68, css));
+      dot.style.width = dot.style.height = `${d}px`;
+      dot.style.borderRadius = "50%";
+      dot.style.background = MEDIA_BRUSHES[id].coloured ? s.color() : "transparent";
+      dot.classList.toggle("eraser", !MEDIA_BRUSHES[id].coloured);
+      num.textContent = String(v);
+    };
+    paint(value);
+    const set = (v: number) => s.setPrefs({ mediaSizes: { ...s.prefs.mediaSizes, [id]: v } });
+    slider.addEventListener("input", () => paint(Number(slider.value)));
+    slider.addEventListener("change", () => set(Number(slider.value)));
+    const presets = h("div", { class: "cs-presets" });
+    for (const v of [6, 12, 24, 48, 96]) {
+      const b = h("button", { type: "button", class: `cs-preset ${v === value ? "active" : ""}` }, String(v));
+      b.addEventListener("click", () => set(v));
+      presets.append(b);
+    }
+    wrap.append(
+      h("div", { class: "cs-size-row" }, h("div", { class: "cs-size-preview" }, dot), slider, num),
+      presets,
+      h("p", { class: "cs-hint" }, t(s.map()?.followZoom ? "Size.HintZoom" : "Size.HintGrid")),
+    );
+    return wrap;
+  }
+
+  /** Paint tool: loads of the brush, the scene's paper, drying. */
+  #mediaMenu(): HTMLElement {
+    const s = this.#session;
+    const p = s.prefs;
+    const id: MediaBrushId = p.mediaBrush;
+    const brush = MEDIA_BRUSHES[id];
+    const loads = resolveMediaParams(brush, p.mediaParams[id]);
+    const wrap = h("div", { class: "cs-studio cs-media" });
+    wrap.append(
+      h("span", { class: "cs-label" }, t(`Media.Brush.${cap(id)}`)),
+      h("p", { class: "cs-hint" }, t(`Media.Hint.${cap(id)}`)),
+    );
+    const slider = (key: "pigment" | "water", label: string) => {
+      const value = Math.round(loads[key] * 100);
+      const out = h("output", { class: "cs-size-num" }, `${value}%`);
+      const input = h("input", {
+        type: "range",
+        min: 0,
+        max: 100,
+        step: 1,
+        value,
+        "aria-label": label,
+      }) as HTMLInputElement;
+      input.addEventListener("input", () => (out.textContent = `${input.value}%`));
+      input.addEventListener("change", () => {
+        const params = { ...p.mediaParams, [id]: { ...(p.mediaParams[id] ?? {}), [key]: Number(input.value) / 100 } };
+        s.setPrefs({ mediaParams: params });
+      });
+      wrap.append(h("div", { class: "cs-size-row" }, h("span", { class: "cs-label" }, label), input, out));
+    };
+    if (brush.coloured) slider("pigment", t(id === "ink" ? "Media.InkDensity" : "Media.Pigment"));
+    if (brush.waterScale > 0) slider("water", t("Media.Water"));
+    if (p.mediaParams[id]) {
+      const reset = h("button", { type: "button", class: "cs-preset" }, t("Media.Reset"));
+      reset.addEventListener("click", () => {
+        const params = { ...p.mediaParams };
+        delete params[id];
+        s.setPrefs({ mediaParams: params });
+      });
+      wrap.append(reset);
+    }
+
+    const paperRow = h("div", { class: "cs-presets" });
+    const current = s.media.paper();
+    for (const paper of PAPER_IDS) {
+      const b = h(
+        "button",
+        {
+          type: "button",
+          class: `cs-preset ${paper === current ? "active" : ""}`,
+          disabled: !s.isRelay,
+          "data-tooltip": t(`Media.PaperHint.${cap(paper)}`),
+        },
+        t(`Media.Paper.${cap(paper)}`),
+      );
+      b.addEventListener("click", () => {
+        s.media.setPaper(paper);
+        this.render();
+      });
+      paperRow.append(b);
+    }
+    wrap.append(h("span", { class: "cs-label" }, t("Media.PaperLabel")), paperRow);
+    if (!s.isRelay) wrap.append(h("p", { class: "cs-hint" }, t("Media.PaperGM")));
+
+    const dry = h("button", { type: "button", class: "cs-preset" }, icon("fa-solid fa-sun"), t("Media.DryNow"));
+    dry.addEventListener("click", async () => {
+      dry.disabled = true;
+      const label = dry.lastChild;
+      if (s.isRelay && label) label.textContent = t("Media.Saving");
+      try {
+        await s.media.dryNow();
+      } finally {
+        dry.disabled = false;
+        if (label) label.textContent = t("Media.DryNow");
+      }
+    });
+    wrap.append(h("div", { class: "cs-presets" }, dry));
+    const st = s.media.stats;
+    if (st)
+      wrap.append(
+        h(
+          "p",
+          { class: "cs-hint" },
+          tf("Media.Status", { backend: st.backend.toUpperCase(), wet: st.wet, chunks: st.chunks }),
+        ),
+      );
     return wrap;
   }
 

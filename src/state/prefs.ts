@@ -7,6 +7,8 @@ import { LIMITS } from "../constants.ts";
 import { ANGLE_MODES, BLEND_MODES, BRUSH_IDS, FILL_PATTERNS, MAP_LAYERS } from "../core/types.ts";
 import type { AngleMode, BlendMode, BrushId, BrushOverride, FillPattern, MapLayer, Mode } from "../core/types.ts";
 import { clamp } from "../core/util.ts";
+import { MEDIA_BRUSHES, MEDIA_BRUSH_IDS, normalizeMediaParams } from "../media/brushes.ts";
+import type { MediaBrushId, MediaParams } from "../media/brushes.ts";
 
 /**
  * Per-client tool preferences (stored in a hidden client setting). Values
@@ -14,9 +16,11 @@ import { clamp } from "../core/util.ts";
  * must never break the UI.
  */
 
-export type ToolId = "draw" | "highlight" | "arrow" | "shape" | "laser" | "text" | "eraser" | "select" | "eyedropper";
+export type ToolId =
+  "draw" | "paint" | "highlight" | "arrow" | "shape" | "laser" | "text" | "eraser" | "select" | "eyedropper";
 export const TOOL_IDS: readonly ToolId[] = [
   "draw",
+  "paint",
   "highlight",
   "arrow",
   "shape",
@@ -113,7 +117,14 @@ export interface Prefs {
   palette: { x: number; y: number } | null;
   /** Palette collapsed to the mode switch and colour. */
   compact: boolean;
+  /** Wet-media (paint tool) brush, sizes and loads. */
+  mediaBrush: MediaBrushId;
+  mediaSizes: Record<MediaBrushId, number>;
+  mediaParams: Partial<Record<MediaBrushId, MediaParams>>;
 }
+
+/** UI size range of the wet-media brushes (larger than the line brushes: washes are broad). */
+export const MEDIA_UI_SIZE = { min: 2, max: 160 } as const;
 
 export const DEFAULT_PREFS: Prefs = {
   mode: "screen",
@@ -176,6 +187,12 @@ export const DEFAULT_PREFS: Prefs = {
   fill: false,
   palette: null,
   compact: false,
+  mediaBrush: "watercolor",
+  mediaSizes: Object.fromEntries(MEDIA_BRUSH_IDS.map((id) => [id, MEDIA_BRUSHES[id].defaultSize])) as Record<
+    MediaBrushId,
+    number
+  >,
+  mediaParams: {},
 };
 
 const pick = <T extends string>(v: unknown, list: readonly T[], fallback: T): T =>
@@ -280,6 +297,14 @@ export function normalizePrefs(raw: unknown): Prefs {
     }
   }
 
+  const mediaSizes = { ...d.mediaSizes };
+  const mediaParams: Partial<Record<MediaBrushId, MediaParams>> = {};
+  for (const id of MEDIA_BRUSH_IDS) {
+    mediaSizes[id] = numIn(r.mediaSizes?.[id], MEDIA_UI_SIZE.min, MEDIA_UI_SIZE.max, d.mediaSizes[id]);
+    const mp = normalizeMediaParams(r.mediaParams?.[id]);
+    if (Object.keys(mp).length) mediaParams[id] = mp;
+  }
+
   const life = (m: Mode) => {
     const v = numIn(r.lifetime?.[m], 0, LIMITS.maxLifetimeMs, d.lifetime[m]);
     return m === "screen" && v === 0 ? d.lifetime.screen : v;
@@ -332,6 +357,9 @@ export function normalizePrefs(raw: unknown): Prefs {
     fill: bool(r.fill, d.fill),
     palette,
     compact: bool(r.compact, d.compact),
+    mediaBrush: pick(r.mediaBrush, MEDIA_BRUSH_IDS, d.mediaBrush),
+    mediaSizes,
+    mediaParams,
   };
 }
 
@@ -352,10 +380,11 @@ export function brushBlend(p: Pick<Prefs, "blends">, id: BrushId): BlendMode {
   return p.blends[id] ?? BRUSHES[id].blend;
 }
 
-/** Size key of the active tool. */
+/** Size key of the active tool (the paint tool keeps its sizes in `mediaSizes`). */
 export function sizeKey(p: Prefs): SizeKey {
   switch (p.tool) {
     case "draw":
+    case "paint":
       return p.brush;
     case "highlight":
       return p.highlight === "area" ? "area" : "highlighter";

@@ -211,8 +211,9 @@ export function defineCanvasClasses() {
 
   G.foundry = {
     canvas: { layers: { CanvasLayer, InteractionLayer } },
-    applications: { api: { DialogV2: { confirm: simConfirm } } },
+    applications: { api: { DialogV2: { confirm: simConfirm } }, apps: { FilePicker: simFilePicker } },
     utils: {
+      getRoute: (path: string) => `${SIM_DATA}${path.replace(/^\/+/, "")}`,
       escapeHTML: (s: string) =>
         s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!),
       isSubclass: (cls: any, parent: any) => cls === parent || cls.prototype instanceof parent,
@@ -220,6 +221,69 @@ export function defineCanvasClasses() {
   };
   return { CanvasLayer, InteractionLayer, TokenLayer };
 }
+
+/* -------------------------------------------- */
+/*  User data files (FilePicker + fetch)        */
+/* -------------------------------------------- */
+
+/** URL prefix of the simulated user data folder (served from IndexedDB, shared by all tabs). */
+const SIM_DATA = "sim-data/";
+
+function simDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open("cs-harness-files", 1);
+    req.onupgradeneeded = () => req.result.createObjectStore("files");
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function simFile(path: string, data?: Blob): Promise<Blob | undefined> {
+  const db = await simDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("files", data ? "readwrite" : "readonly");
+    const store = tx.objectStore("files");
+    const req = data ? store.put(data, path) : store.get(path);
+    req.onsuccess = () => resolve(data ? data : (req.result as Blob | undefined));
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/** Clear the simulated data folder (harness "reset scene"). */
+export async function clearSimFiles(): Promise<void> {
+  const db = await simDB();
+  await new Promise<void>((resolve) => {
+    const req = db.transaction("files", "readwrite").objectStore("files").clear();
+    req.onsuccess = () => resolve();
+    req.onerror = () => resolve();
+  });
+}
+
+/** Emulates the server: only GMs (FILES_UPLOAD) may upload; directories always exist. */
+const simFilePicker = {
+  async upload(source: string, dir: string, file: File) {
+    if (source !== "data") throw new Error(`unsupported source ${source}`);
+    if (!G.game.user.isGM) throw new Error("You do not have permission to upload files");
+    await new Promise((r) => setTimeout(r, Number(params.get("latency") ?? 20)));
+    await simFile(`${dir}/${file.name}`, file);
+    return { status: "success", path: `${dir}/${file.name}` };
+  },
+  async createDirectory(source: string, target: string) {
+    if (!G.game.user.isGM) throw new Error("You do not have permission to create directories");
+    return { source, target };
+  },
+};
+
+const nativeFetch = globalThis.fetch.bind(globalThis);
+globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+  const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url, location.href);
+  const marker = `/${SIM_DATA}`;
+  const at = url.pathname.indexOf(marker);
+  if (at < 0) return nativeFetch(input, init);
+  const blob = await simFile(decodeURIComponent(url.pathname.slice(at + marker.length)));
+  if (!blob) return new Response("not found", { status: 404 });
+  return new Response(blob, { status: 200, headers: { "content-length": String(blob.size) } });
+};
 
 /* -------------------------------------------- */
 /*  Dialog                                      */
@@ -620,6 +684,7 @@ export async function createGame() {
     },
     modules: new Map([["canvas-scribble", { id: "canvas-scribble", active: true, api: undefined }]]),
     scenes: { get: (id: string) => (id === scene.id ? scene : undefined) },
+    world: { id: "harness-world" },
   };
   G.Hooks = new SimHooks();
   G.CONFIG = { Canvas: { layers: {} } };

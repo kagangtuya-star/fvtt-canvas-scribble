@@ -97,3 +97,22 @@ export function pixiBlendMode(blend: "normal" | "multiply" | "screen" | "overlay
   // PIXI v8 string blend modes
   return blend === "lighter" ? "add" : blend;
 }
+
+/** The FilePicker API (`foundry.applications.apps.FilePicker` in v13/v14; the v12 global as a fallback). */
+export function filePicker(): FilePickerStatic | null {
+  const fp = foundry.applications?.apps?.FilePicker;
+  const impl = fp?.implementation ?? fp ?? (globalThis as { FilePicker?: FilePickerStatic }).FilePicker;
+  return impl && typeof impl.upload === "function" ? impl : null;
+}
+
+/** Id of the running world (bake files live under `worlds/<id>/`). */
+export function worldId(): string | null {
+  const id = game.world?.id;
+  return typeof id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(id) ? id : null;
+}
+
+/** URL of a file in the user data folder (honours a route prefix). */
+export function dataUrl(path: string): string {
+  const route = foundry.utils?.getRoute;
+  return route ? route(path) : `/${path}`;
+}

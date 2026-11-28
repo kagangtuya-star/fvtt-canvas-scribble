@@ -114,6 +114,7 @@ Hooks.once("setup", () => {
   session.onTextRequest = (req) => a.text.open(req);
   session.onTextEditingChange = (id) => a.renderer?.setEditingText(id);
   session.onRefresh = () => a.renderer?.refresh();
+  session.media.onDisplay = (key, data) => a.renderer?.media.show(key, data);
   session.onChange(() => {
     a.cursor.refresh();
     a.palette.show(paletteWanted(a));
@@ -124,6 +125,7 @@ Hooks.once("setup", () => {
   };
   settings.onSettingsChange(() => {
     session.rebuildSpaces();
+    session.media.settingsChanged();
     a.renderer?.refresh();
     a.debug.show(settings.debugEnabled());
     refreshUI();
@@ -164,6 +166,7 @@ Hooks.on("canvasReady", () => {
       ticker: canvas.app.ticker,
     });
     a.renderer.hidden = a.hidden;
+    for (const [key, data] of a.session.media.displays()) a.renderer.media.show(key, data);
     a.debug.attach(a.renderer);
     a.renderer.onFrame = (info) => {
       a.debug.frame(info);

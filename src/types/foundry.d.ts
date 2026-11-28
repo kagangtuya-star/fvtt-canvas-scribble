@@ -248,6 +248,20 @@ interface FoundryGame {
   };
   modules: { get(id: string): { api?: unknown; version?: string; active?: boolean } | undefined };
   scenes?: { get(id: string): FoundryScene | undefined };
+  world?: { id: string };
+}
+
+/** The static FilePicker API used to store wet-media bakes (v13/v14 `foundry.applications.apps.FilePicker`). */
+interface FilePickerStatic {
+  upload(
+    source: string,
+    path: string,
+    file: File,
+    body?: object,
+    options?: { notify?: boolean },
+  ): Promise<{ status?: string; path?: string } | false | void | undefined>;
+  createDirectory(source: string, target: string, options?: object): Promise<unknown>;
+  browse?(source: string, target: string, options?: object): Promise<{ dirs?: string[]; files?: string[] }>;
 }
 
 interface FoundryHooks {
@@ -296,7 +310,11 @@ declare const foundry: {
   utils: {
     debounce<F extends (...args: any[]) => void>(fn: F, delay: number): F;
     escapeHTML?(text: string): string;
+    getRoute?(path: string): string;
   };
   canvas: { layers: { InteractionLayer: InteractionLayerClass } };
-  applications: { api: { DialogV2: DialogV2Static } };
+  applications: {
+    api: { DialogV2: DialogV2Static };
+    apps?: { FilePicker?: FilePickerStatic & { implementation?: FilePickerStatic } };
+  };
 };

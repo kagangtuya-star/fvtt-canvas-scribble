@@ -17,7 +17,8 @@
       "Text": "文字",
       "Eraser": "橡皮擦",
       "Select": "选择与变换",
-      "Eyedropper": "吸管取色（I）"
+      "Eyedropper": "吸管取色（I）",
+      "Paint": "绘画（湿介质）"
     },
     "Mode": {
       "Screen": {
@@ -248,6 +249,10 @@
       "Permanent": {
         "Name": "全部永久标注",
         "Hint": "此场景保存的所有标记"
+      },
+      "Media": {
+        "Name": "全部湿介质颜料",
+        "Hint": "本场景所有上过颜料的区域"
       }
     },
     "Notify": {
@@ -263,7 +268,18 @@
       "MaskLimit": "部分标记已被局部擦除过多次，请改为整笔擦除。",
       "NothingToUndo": "没有可撤销的操作。",
       "NothingToRedo": "没有可重做的操作。",
-      "ColorPicked": "已取色 {color}。"
+      "ColorPicked": "已取色 {color}。",
+      "NoMediaPermission": "你的角色不能使用湿介质绘画。",
+      "MediaUndoFailed": "这一笔已无法撤销：之后有其他颜料碰到了它。",
+      "MediaBudget": "本场景的颜料存储空间已满。请清除部分颜料，或在设置中调高上限。",
+      "MediaTooMany": "本场景上色区域数量已达上限。",
+      "MediaUnavailable": "无法保存颜料：此服务器不支持文件上传。",
+      "MediaUploadFailed": "保存颜料失败（详见控制台）。",
+      "MediaLoadFailed": "无法读取部分已保存的颜料（详见控制台）。现有文件未被删除。",
+      "MediaMissing": "部分已保存的颜料文件已丢失，已跳过；可以继续绘制。丢失部分需要从备份恢复。",
+      "MediaSaved": "颜料已晾干并保存。",
+      "MediaSaveFailed": "颜料尚未完整保存，请保留当前页面并再次点击“立即晾干”。",
+      "MediaNoGM": "没有 GM 在线：湿颜料会显示，但不会被保存。"
     },
     "Settings": {
       "PermScreen": {
@@ -319,6 +335,29 @@
       "Debug": {
         "Name": "调试面板",
         "Hint": "显示渲染、缓存与网络计数器，并在控制台记录协议消息。"
+      },
+      "PermMedia": {
+        "Name": "湿介质绘画：最低角色",
+        "Hint": "谁可以使用绘画工具。干透的颜料由 GM 客户端以文件形式保存在世界目录中。"
+      },
+      "MediaBudget": {
+        "Name": "每个场景的颜料存储（MB）",
+        "Hint": "一个场景的干颜料可占用的磁盘空间。"
+      },
+      "MediaDrying": {
+        "Name": "颜料干燥速度",
+        "Hint": "1 = 水彩约 45 秒干透、油画约 4 分钟；2 = 快一倍。"
+      },
+      "MediaPaper": {
+        "Name": "默认纸张",
+        "Hint": "未单独选择纸张的场景所用的纸（GM 可在绘画工具中按场景更换）。"
+      },
+      "MediaBackend": {
+        "Name": "颜料模拟",
+        "Hint": "本客户端在哪里运行湿介质模拟。自动：通过自检后使用 GPU，否则回退到 CPU。",
+        "Auto": "自动",
+        "Gpu": "GPU（WebGL2）",
+        "Cpu": "CPU"
       }
     },
     "Keys": {
@@ -377,6 +416,52 @@
       "Toggle": {
         "Name": "切换随绘幕布图层",
         "Hint": "在随绘幕布图层与 Token 图层之间切换。"
+      }
+    },
+    "Media": {
+      "Title": "湿介质",
+      "Pigment": "颜料量",
+      "InkDensity": "墨色浓淡",
+      "Water": "含水量",
+      "Reset": "重置载量",
+      "PaperLabel": "本场景纸张",
+      "PaperGM": "只有 GM 的客户端可以更换纸张。",
+      "DryNow": "立即晾干",
+      "Saving": "正在保存颜料…",
+      "Status": "{backend} 模拟 · {wet} 湿 / {chunks} 个活动区域",
+      "Brush": {
+        "Watercolor": "水彩",
+        "Wash": "大笔铺色",
+        "Ink": "水墨",
+        "Gouache": "水粉",
+        "Oil": "油画",
+        "Water": "清水笔",
+        "Smudge": "晕染笔",
+        "Sponge": "海绵"
+      },
+      "Hint": {
+        "Watercolor": "透明颜料随水流动，沉积在纸纹凹处形成颗粒，干后边缘加深。",
+        "Wash": "水多色少：大面积均匀铺色。在未干的底色上落笔会形成柔和的水花。",
+        "Ink": "染色性墨：沿纸纤维洇开，浓淡决定墨色深浅，笔干时留下飞白。",
+        "Gouache": "不透明的厚涂颜料：覆盖下层，像真实颜料一样混色。",
+        "Oil": "不透明且干得慢：几分钟内都能继续推拉，与接触到的颜料混合。",
+        "Water": "重新润湿已干颜料，产生水花，并洗起不染色的颜色。",
+        "Smudge": "自身不带颜料：拖动并混合未干的颜料。",
+        "Sponge": "吸走水分和湿颜料，洗起不染色的颜色。"
+      },
+      "Paper": {
+        "Cold": "冷压纸",
+        "Hot": "热压纸",
+        "Rough": "粗纹纸",
+        "Xuan": "宣纸",
+        "Canvas": "画布"
+      },
+      "PaperHint": {
+        "Cold": "中等纹理的水彩纸。",
+        "Hot": "光滑、吸水慢：边缘清晰，颗粒感弱。",
+        "Rough": "纹理粗重：颗粒感和干笔肌理强。",
+        "Xuan": "薄而极易吸水：墨沿纤维洇开。",
+        "Canvas": "上过底的亚麻布纹：不吸水，适合水粉和油画。"
       }
     }
   }

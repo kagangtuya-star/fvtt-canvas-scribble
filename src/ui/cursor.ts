@@ -49,9 +49,9 @@ export class BrushCursor {
     }
     const key = sizeKey({ ...s.prefs, tool });
     const space = s.space(mode);
-    let d = s.prefs.sizes[key];
+    let d = tool === "paint" ? s.prefs.mediaSizes[s.prefs.mediaBrush] : s.prefs.sizes[key];
     if (space) {
-      const scale = key in BRUSHES ? BRUSHES[key as keyof typeof BRUSHES].widthScale : 1;
+      const scale = tool !== "paint" && key in BRUSHES ? BRUSHES[key as keyof typeof BRUSHES].widthScale : 1;
       d = space.widthFor(d, scale) * space.cssPerUnit();
     }
     if (tool === "text") d = 2;

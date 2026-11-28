@@ -71,7 +71,7 @@ for (const file of walk(join(ROOT, "src"))) {
 }
 // Dynamic keys (template literals in the UI).
 const dynamic = {
-  Tools: ["draw", "highlight", "arrow", "shape", "laser", "text", "eraser", "select", "eyedropper"],
+  Tools: ["draw", "paint", "highlight", "arrow", "shape", "laser", "text", "eraser", "select", "eyedropper"],
   Brush: [
     "pen",
     "pressure",
@@ -98,14 +98,18 @@ const dynamic = {
   Symmetry: ["none", "vertical", "horizontal", "quad", "radial4", "radial6", "radial8", "radial12"],
   Shape: ["line", "rect", "ellipse", "polygon"],
   Hold: ["screen", "map", "laser", "eraser"],
+  "Media.Brush": ["watercolor", "wash", "ink", "gouache", "oil", "water", "smudge", "sponge"],
+  "Media.Hint": ["watercolor", "wash", "ink", "gouache", "oil", "water", "smudge", "sponge"],
+  "Media.Paper": ["cold", "hot", "rough", "xuan", "canvas"],
+  "Media.PaperHint": ["cold", "hot", "rough", "xuan", "canvas"],
 };
 for (const [group, ids] of Object.entries(dynamic)) for (const id of ids) used.add(`${group}.${cap(id)}`);
 for (const m of ["screen", "map"]) for (const leaf of ["Name", "Hint"]) used.add(`Mode.${cap(m)}.${leaf}`);
 for (const l of ["below", "above", "top"]) for (const leaf of ["Name", "Hint"]) used.add(`Layer.${cap(l)}.${leaf}`);
-for (const s of ["mine", "screen", "mapTemp", "allTemp", "minePermanent", "permanent"]) {
+for (const s of ["mine", "screen", "mapTemp", "allTemp", "minePermanent", "permanent", "media"]) {
   for (const leaf of ["Name", "Hint"]) used.add(`Clear.${cap(s)}.${leaf}`);
 }
-for (const s of ["PermScreen", "PermMap", "PermPermanent", "PermManage"])
+for (const s of ["PermScreen", "PermMap", "PermPermanent", "PermManage", "PermMedia"])
   for (const leaf of ["Name", "Hint"]) used.add(`Settings.${s}.${leaf}`);
 for (const h of ["Screen", "Map", "Laser", "Eraser"])
   for (const leaf of ["Name", "Hint"]) used.add(`Keys.Hold${h}.${leaf}`);

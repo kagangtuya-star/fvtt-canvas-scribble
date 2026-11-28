@@ -25,6 +25,7 @@ const SCOPES: ScopeInfo[] = [
   { scope: "allTemp", icon: "fa-solid fa-users", risky: true },
   { scope: "minePermanent", icon: "fa-solid fa-thumbtack", risky: true },
   { scope: "permanent", icon: "fa-solid fa-dumpster", risky: true },
+  { scope: "media", icon: "fa-solid fa-paintbrush", risky: true },
 ];
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -37,7 +38,7 @@ export async function runClear(session: Session, scope: ClearScope): Promise<voi
     const name = t(`Clear.${cap(scope)}.Name`);
     const body =
       `<p>${escapeHTML(tf("Clear.Confirm", { name, count }))}</p>` +
-      (scope === "permanent" || scope === "minePermanent"
+      (scope === "permanent" || scope === "minePermanent" || scope === "media"
         ? `<p class="notification warning">${escapeHTML(t("Clear.PermanentWarning"))}</p>`
         : "");
     const ok = await confirm(t("Clear.Title"), body, t("Clear.Yes"));

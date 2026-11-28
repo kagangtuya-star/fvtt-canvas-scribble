@@ -25,6 +25,7 @@ export interface LayerHooks {
 
 const TOOL_ICONS: Record<ToolId, string> = {
   draw: "fa-solid fa-pen-nib",
+  paint: "fa-solid fa-paintbrush",
   highlight: "fa-solid fa-highlighter",
   arrow: "fa-solid fa-arrow-trend-up",
   shape: "fa-regular fa-square",
@@ -37,6 +38,7 @@ const TOOL_ICONS: Record<ToolId, string> = {
 
 const TOOL_LABELS: Record<ToolId, string> = {
   draw: "Tools.Draw",
+  paint: "Tools.Paint",
   highlight: "Tools.Highlight",
   arrow: "Tools.Arrow",
   shape: "Tools.Shape",

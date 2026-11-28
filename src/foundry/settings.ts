@@ -2,6 +2,8 @@ import { MODULE_ID } from "../constants.ts";
 import { DEFAULT_THRESHOLDS, ROLES } from "../core/permissions.ts";
 import type { PermissionThresholds } from "../core/permissions.ts";
 import { k } from "../i18n.ts";
+import { PAPER_IDS } from "../media/brushes.ts";
+import type { PaperId } from "../media/brushes.ts";
 import { normalizePrefs } from "../state/prefs.ts";
 import type { Prefs } from "../state/prefs.ts";
 
@@ -18,6 +20,11 @@ export const SETTING = {
   permMap: "permMap",
   permPermanent: "permPermanent",
   permManage: "permManage",
+  permMedia: "permMedia",
+  mediaBudget: "mediaBudgetMB",
+  mediaDrying: "mediaDrying",
+  mediaPaper: "mediaPaper",
+  mediaBackend: "mediaBackend",
   budget: "storageBudgetKB",
   playerFog: "playerFog",
   pressure: "pressure",
@@ -69,6 +76,7 @@ export function registerSettings(): void {
   role(SETTING.permMap, "PermMap", DEFAULT_THRESHOLDS.map);
   role(SETTING.permPermanent, "PermPermanent", DEFAULT_THRESHOLDS.permanent);
   role(SETTING.permManage, "PermManage", DEFAULT_THRESHOLDS.manage);
+  role(SETTING.permMedia, "PermMedia", DEFAULT_THRESHOLDS.media);
   reg(SETTING.budget, {
     name: k("Settings.Budget.Name"),
     hint: k("Settings.Budget.Hint"),
@@ -77,6 +85,38 @@ export function registerSettings(): void {
     type: Number,
     range: { min: 128, max: 8192, step: 128 },
     default: 1024,
+    onChange: changed,
+  });
+  reg(SETTING.mediaBudget, {
+    name: k("Settings.MediaBudget.Name"),
+    hint: k("Settings.MediaBudget.Hint"),
+    scope: "world",
+    config: true,
+    type: Number,
+    range: { min: 2, max: 256, step: 2 },
+    default: 32,
+    onChange: changed,
+  });
+  reg(SETTING.mediaDrying, {
+    name: k("Settings.MediaDrying.Name"),
+    hint: k("Settings.MediaDrying.Hint"),
+    scope: "world",
+    config: true,
+    type: Number,
+    range: { min: 0.25, max: 8, step: 0.25 },
+    default: 1,
+    onChange: changed,
+  });
+  reg(SETTING.mediaPaper, {
+    name: k("Settings.MediaPaper.Name"),
+    hint: k("Settings.MediaPaper.Hint"),
+    scope: "world",
+    config: true,
+    type: String,
+    choices: Object.fromEntries(
+      PAPER_IDS.map((id) => [id, k(`Media.Paper.${id.charAt(0).toUpperCase()}${id.slice(1)}`)]),
+    ),
+    default: "cold",
     onChange: changed,
   });
   reg(SETTING.playerFog, {
@@ -143,6 +183,20 @@ export function registerSettings(): void {
     default: true,
     onChange: changed,
   });
+  reg(SETTING.mediaBackend, {
+    name: k("Settings.MediaBackend.Name"),
+    hint: k("Settings.MediaBackend.Hint"),
+    scope: "client",
+    config: true,
+    type: String,
+    choices: {
+      auto: k("Settings.MediaBackend.Auto"),
+      gpu: k("Settings.MediaBackend.Gpu"),
+      cpu: k("Settings.MediaBackend.Cpu"),
+    },
+    default: "auto",
+    requiresReload: true,
+  });
   reg(SETTING.debug, {
     name: k("Settings.Debug.Name"),
     hint: k("Settings.Debug.Hint"),
@@ -178,10 +232,27 @@ export function thresholds(): PermissionThresholds {
     map: n(SETTING.permMap, DEFAULT_THRESHOLDS.map),
     permanent: n(SETTING.permPermanent, DEFAULT_THRESHOLDS.permanent),
     manage: n(SETTING.permManage, DEFAULT_THRESHOLDS.manage),
+    media: n(SETTING.permMedia, DEFAULT_THRESHOLDS.media),
   };
 }
 
 export const budgetBytes = (): number => Math.max(128, Number(get(SETTING.budget)) || 1024) * 1024;
+/** Bytes of wet-media bakes kept per scene. */
+export const mediaBudgetBytes = (): number => Math.max(2, Number(get(SETTING.mediaBudget)) || 32) * 1024 * 1024;
+/** Drying speed factor (2 = dries twice as fast). */
+export const mediaDrying = (): number => {
+  const v = Number(get(SETTING.mediaDrying));
+  return Number.isFinite(v) && v > 0 ? Math.min(8, Math.max(0.25, v)) : 1;
+};
+/** Default paper of scenes without their own. */
+export const mediaPaper = (): PaperId => {
+  const v = get(SETTING.mediaPaper);
+  return typeof v === "string" && (PAPER_IDS as readonly string[]).includes(v) ? (v as PaperId) : "cold";
+};
+export const mediaBackend = (): "auto" | "cpu" | "gpu" => {
+  const v = get(SETTING.mediaBackend);
+  return v === "cpu" || v === "gpu" ? v : "auto";
+};
 export const playerFog = (): boolean => get(SETTING.playerFog) === true;
 export const pressureSetting = (): PressureSetting => (get(SETTING.pressure) as PressureSetting) ?? "auto";
 export const followZoom = (): boolean => get(SETTING.followZoom) === true;

@@ -6,7 +6,7 @@
  *
  *   harness.html?user=gm|alice|bob&lang=en|zh&fog=1&zoom=0.5&gen=13|14&theme=light
  */
-import { createCanvas, createGame, createSceneControls, defineCanvasClasses, netLog } from "./sim.ts";
+import { clearSimFiles, createCanvas, createGame, createSceneControls, defineCanvasClasses, netLog } from "./sim.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const G = globalThis as any;
@@ -49,6 +49,7 @@ function buildPanel(me: { id: string; name: string }) {
     if (a === "redraw") await G.canvas.draw();
     if (a === "reset") {
       localStorage.removeItem("cs-harness-scene");
+      await clearSimFiles();
       location.reload();
     }
   });

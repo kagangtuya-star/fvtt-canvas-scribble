@@ -23,9 +23,9 @@ describe("permissions", () => {
   });
 
   it("always allows the GM and never allows role NONE", () => {
-    const strict = { screen: 99, map: 99, permanent: 99, manage: 99 };
+    const strict = { screen: 99, map: 99, permanent: 99, manage: 99, media: 99 };
     assert.ok(allowed(ROLES.GAMEMASTER, "manage", strict));
-    const lax = { screen: 0, map: 0, permanent: 0, manage: 0 };
+    const lax = { screen: 0, map: 0, permanent: 0, manage: 0, media: 0 };
     assert.ok(!allowed(ROLES.NONE, "screen", lax));
   });
 

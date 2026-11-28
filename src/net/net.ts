@@ -97,9 +97,10 @@ export class Net {
     // permanent items for scenes it is not viewing.
     const [m, p, i] = messageCost(msg);
     const now = performance.now();
-    const limits = msg.t === "s" || msg.t === "p" || msg.t === "b" ? this.#previewLimits : this.#limits;
+    const preview = msg.t === "s" || msg.t === "p" || msg.t === "b" || msg.t === "ms" || msg.t === "mp";
+    const limits = preview ? this.#previewLimits : this.#limits;
     if (!limits.messages.take(senderId, m, now)) return this.#drop(senderId, "rate: messages");
-    const points = msg.t === "e" ? this.#finalPoints : limits.points;
+    const points = msg.t === "e" || msg.t === "me" ? this.#finalPoints : limits.points;
     if (p && !points.take(senderId, p, now)) return this.#drop(senderId, "rate: points");
     if (i && !limits.items.take(senderId, i, now)) return this.#drop(senderId, "rate: items");
     try {

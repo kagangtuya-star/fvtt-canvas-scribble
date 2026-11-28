@@ -15,7 +15,9 @@ export type Action =
   /** Permanent map annotations (stored in the Scene). */
   | "permanent"
   /** Erase/clear other users' items. */
-  | "manage";
+  | "manage"
+  /** Wet-media painting (simulated, baked into the Scene by the GM). */
+  | "media";
 
 export type PermissionThresholds = Record<Action, number>;
 
@@ -24,6 +26,7 @@ export const DEFAULT_THRESHOLDS: PermissionThresholds = {
   map: ROLES.PLAYER,
   permanent: ROLES.TRUSTED,
   manage: ROLES.ASSISTANT,
+  media: ROLES.TRUSTED,
 };
 
 export function allowed(role: number, action: Action, thresholds: PermissionThresholds): boolean {

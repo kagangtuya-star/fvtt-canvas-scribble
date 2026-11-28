@@ -5,6 +5,7 @@ import { compareEntries } from "../core/store.ts";
 import type { Entry, ItemStore, StoreEvent } from "../core/store.ts";
 import type { MapLayer, ScribbleItem } from "../core/types.ts";
 import { drawLasers } from "./laser.ts";
+import { MediaLayer } from "./media-layer.ts";
 import { SpriteSet } from "./sprites.ts";
 import { stats } from "./stats.ts";
 import { TileCache, tierFor } from "./tiles.ts";
@@ -36,6 +37,7 @@ export interface RenderHost {
   shows(item: ScribbleItem): boolean;
   /** Effective map layer (world policy may push players' marks under the fog). */
   layerOf(item: ScribbleItem): MapLayer;
+  mediaView?(bounds: Bounds): void;
 }
 
 export interface RenderTargets {
@@ -195,6 +197,8 @@ export class SceneRenderer {
   readonly #map: Record<MapLayer, Root>;
   readonly #screenRoot: PIXI.Container;
   readonly #screen = new Map<string, Root>();
+  /** Wet-media paint (fed by the session's media controller). */
+  readonly media = new MediaLayer();
   /** Root each item is displayed in (items move when their layer changes). */
   readonly #where = new Map<string, Root>();
   readonly #off: () => void;
@@ -218,6 +222,7 @@ export class SceneRenderer {
     // Above every token and overhead tile, still below weather (sort layer 1000 at infinite elevation).
     above.elevation = Infinity;
     above.sortLayer = SORT_LAYER.above;
+    targets.primary.addChild(this.media.container);
     targets.primary.addChild(below);
     targets.primary.addChild(above);
     targets.primary.sortDirty = true;
@@ -236,6 +241,7 @@ export class SceneRenderer {
   set hidden(value: boolean) {
     this.#hidden = value;
     for (const root of Object.values(this.#map)) root.container.visible = !value;
+    this.media.container.visible = !value;
     this.#screenRoot.visible = !value;
   }
 
@@ -341,15 +347,19 @@ export class SceneRenderer {
     // Map roots.
     const map = host.map();
     for (const root of Object.values(this.#map)) root.container.visible = !!map;
+    this.media.container.visible = !!map;
     if (map) {
       const f = map.frame;
       for (const root of Object.values(this.#map)) {
         root.container.position.set(f.sceneX, f.sceneY);
         root.container.scale.set(map.sx, map.sy);
       }
+      this.media.container.position.set(f.sceneX, f.sceneY);
+      this.media.container.scale.set(map.sx, map.sy);
       this.#syncGround();
       tier = tierFor(map.cssPerUnit() * res * Math.max(1, map.sy / map.sx));
       const view: Bounds = map.visibleBounds(vp, 96);
+      host.mediaView?.(view);
       for (const root of Object.values(this.#map)) {
         root.tiles?.frame({ view, tier, frame, deadline });
         root.sprites.frame({ now, scale: tier, tolerance: 0, view, deadline });
@@ -386,6 +396,7 @@ export class SceneRenderer {
     if (ground === this.#groundElevation) return;
     this.#groundElevation = ground;
     (this.#map.below.container as PrimarySortable).elevation = Number.isFinite(ground) ? ground : 0;
+    this.media.elevation = Number.isFinite(ground) ? ground : 0;
     this.#targets.primary.sortDirty = true;
   }
 
@@ -401,7 +412,7 @@ export class SceneRenderer {
       sprites += root.sprites.size;
       lasers += root.lasers.size;
     }
-    return { tiles, stored, sprites, lasers, screenRoots: this.#screen.size };
+    return { tiles, stored, sprites, lasers, screenRoots: this.#screen.size, mediaChunks: this.media.size };
   }
 
   destroy(): void {
@@ -410,6 +421,7 @@ export class SceneRenderer {
     this.#off();
     this.#targets.ticker.remove(this.#tick, this);
     for (const root of this.#roots()) root.destroy();
+    this.media.destroy();
     this.#screen.clear();
     this.#where.clear();
     if (!this.#screenRoot.destroyed) this.#screenRoot.destroy({ children: true });
