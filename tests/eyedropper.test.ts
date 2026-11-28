@@ -14,7 +14,7 @@ function setup(t: TestContext, webgl = true) {
   const renderer = Object.assign(new EventEmitter(), {
     resolution: 2,
     renderingToScreen: true,
-    gl: webgl ? { isContextLost: () => false } : undefined,
+    gl: webgl ? { isContextLost: (): boolean => false } : undefined,
     extract: {
       pixels(target: undefined, frame: PIXI.Rectangle) {
         reads.push({ target, frame });
