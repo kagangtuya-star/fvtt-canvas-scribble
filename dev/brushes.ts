@@ -4,7 +4,7 @@
  * ratio. Used for visual QA (`npm run harness`, open dist-dev/brushes.html).
  */
 import { BRUSHES, DEFAULT_PALETTE } from "../src/brush/brushes.ts";
-import { ctx2d, paintItemLayer } from "../src/brush/paint.ts";
+import { ctx2d, effectiveBlend, paintItemLayer, toCanvasBlend } from "../src/brush/paint.ts";
 import { StrokeRecorder } from "../src/brush/recorder.ts";
 import { BRUSH_IDS, SCHEMA_VERSION } from "../src/core/types.ts";
 import type { BrushId, ScribbleItem } from "../src/core/types.ts";
@@ -120,10 +120,12 @@ function renderSet(ctx: CanvasRenderingContext2D, dark: boolean): void {
       layer.width = ctx.canvas.width;
       layer.height = ctx.canvas.height;
       paintItemLayer(ctx2d(layer), it, view);
+      ctx.save();
       ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.globalCompositeOperation = toCanvasBlend(effectiveBlend(it));
       ctx.globalAlpha = b.opacity;
       ctx.drawImage(layer, 0, 0);
-      ctx.globalAlpha = 1;
+      ctx.restore();
     });
   });
 }
@@ -258,9 +260,40 @@ function renderShapes(ctx: CanvasRenderingContext2D, dark: boolean): void {
     points: penGesture(600, 330),
     style: { halo: true },
   });
-  pen.erase = [{ size: 10, points: [700, 300, 0.5, 712, 380, 0.5] }];
+  pen.erase = [{ size: 10, points: [700, 300, 0.5, 712, 380, 0.5], tip: "rect", ang: -20, asp: 0.45 }];
   draw(pen);
   draw(item({ tool: "pencil", color: ink, size: 4, points: penGesture(600, 440) }));
+  // RoughJS sketchy shapes + hachure / cross-hatch / dots fills
+  draw(
+    item({
+      kind: "shape",
+      tool: "rect",
+      color: "#e0483e",
+      size: 3,
+      points: [40, 495, 0.5, 190, 585, 0.5],
+      style: { fill: 0.35, fillPattern: "hachure", brush: { rgh: 1.5 } },
+    }),
+  );
+  draw(
+    item({
+      kind: "shape",
+      tool: "ellipse",
+      color: "#4caf6a",
+      size: 3,
+      points: [220, 495, 0.5, 370, 585, 0.5],
+      style: { fill: 0.35, fillPattern: "cross-hatch", brush: { rgh: 1.6 } },
+    }),
+  );
+  draw(
+    item({
+      kind: "shape",
+      tool: "polygon",
+      color: "#9b6bdf",
+      size: 3,
+      points: [410, 580, 0.5, 480, 495, 0.5, 560, 575, 0.5],
+      style: { closed: true, fill: 0.4, fillPattern: "dots", brush: { rgh: 1.4 } },
+    }),
+  );
 }
 
 document.body.style.cssText =
@@ -270,6 +303,6 @@ style.textContent = "figure{margin:0} figcaption{margin:4px 0}";
 document.head.append(style);
 panel("Brushes — dark map", "#2a2621", (c) => renderSet(c, true), 900, 40 + BRUSH_IDS.length * 62);
 panel("Brushes — parchment", "#e9dcc0", (c) => renderSet(c, false), 900, 40 + BRUSH_IDS.length * 62);
-panel("Shapes, areas, text, masks — dark", "#2a2621", (c) => renderShapes(c, true), 900, 520);
-panel("Shapes, areas, text, masks — parchment", "#e9dcc0", (c) => renderShapes(c, false), 900, 520);
+panel("Shapes, areas, text, masks, roughjs — dark", "#2a2621", (c) => renderShapes(c, true), 900, 620);
+panel("Shapes, areas, text, masks, roughjs — parchment", "#e9dcc0", (c) => renderShapes(c, false), 900, 620);
 (window as unknown as { __ready: boolean }).__ready = true;

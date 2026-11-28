@@ -81,7 +81,8 @@ Socket `module.canvas-scribble`, envelope `{ v, t, scene, … }` (`src/net/proto
 | `t` | Meaning |
 |---|---|
 | `s` | live item starts |
-| `p` | live points from index `from` (batched every 33 ms) |
+| `p` | live points replacing the tail from index `from` |
+| `b` | up to 12 live `s`/`p` updates in one 33 ms batch; `s` can replace an existing live preview |
 | `e` | final canonical item; `persist: true` asks the active GM to store it |
 | `x` | live item cancelled |
 | `d` | items deleted |
@@ -91,8 +92,8 @@ Socket `module.canvas-scribble`, envelope `{ v, t, scene, … }` (`src/net/proto
 | `n` | the GM refused to store an item (permission, budget, count) |
 
 Receivers drop messages from themselves or unknown users, over 256 KB, or malformed, and apply per-sender token buckets
-for messages, points and items. Each handler re-checks the sender's role against the world permission settings and
-whether the sender may modify the target item's author.
+for messages, points and items. Preview traffic has its own budget so it cannot crowd out final items. Each handler
+re-checks the sender's role against the world permission settings and whether they may modify the target item.
 
 **Permanent marks.** The author sends `e` with `persist`; the active GM validates, checks the budget and batches a Scene
 update (60 ms); every client then reads the flags (`updateScene`) and shows the mark from the tile cache. The GM's
@@ -101,12 +102,14 @@ arrives before the write lands is still applied.
 
 ## Rendering
 
-- **Tile cache** (stored marks): 512 px canvases (508 px inner + 2 px bleed), resolution tier = next power of two of
-  device pixels per unit (1/16 … 8). Visible tiles are built nearest-first within a 6 ms frame budget (at least one per
+- **Tile cache** (stored marks below the first non-normal blend in each map layer): 512 px canvases (508 px inner + 2 px
+  bleed), resolution tier = next power of two of device pixels per unit (1/16 … 8). Visible tiles are built nearest-first
+  within a 6 ms frame budget (at least one per
   frame); the shown tier only switches when all visible tiles of the new tier are ready. New marks are painted onto
   existing tiles in place when they are the newest; other changes rebuild the affected tiles. Least-recently-used
   tiles are evicted.
-- **Item sprites** (live, temporary, pending): each item rasterised once into its own canvas, sized to its bounds
+- **Item sprites** (live, temporary, pending, and stored marks from the first blend upward): sprites blend against
+  the scene in drawing order. Each item is rasterised into its own canvas, sized to its bounds
   (capped at 4096 px edge / 8 Mpx), re-rasterised only when it changes or the zoom tier changes; alpha follows the
   lifetime fade.
 - **Laser**: one `Graphics` per root, redrawn each frame from point timestamps.
