@@ -1,16 +1,29 @@
-import type { BrushId, ScribbleItem } from "../core/types.ts";
-import { BRUSHES, resolveBrushParams } from "./brushes.ts";
-import { ellipsePolyline, rectPolyline } from "./shapes.ts";
+import { IDENTITY, multiply, reflect, rotate } from "../core/matrix.ts";
+import type { Mat3 } from "../core/matrix.ts";
+import type { ScribbleItem } from "../core/types.ts";
+import { transformItem } from "../tools/transform.ts";
 
 /**
- * Symmetry / Mirror / Radial drawing transforms.
+ * Symmetry / Mirror / Radial / Kaleidoscope drawing transforms.
  *
  * Symmetry expands a single gesture into standard companion `ScribbleItem`s
  * committed in one Undo batch, so multiplayer sync, partial erasing, hit-testing
  * and tile caching work automatically with zero protocol overhead.
+ * Every mode yields at most twelve transforms (`MAX_LIVE_BATCH`).
  */
 
-export type SymmetryMode = "none" | "vertical" | "horizontal" | "quad" | "radial4" | "radial6" | "radial8" | "radial12";
+export type SymmetryMode =
+  | "none"
+  | "vertical"
+  | "horizontal"
+  | "quad"
+  | "radial4"
+  | "radial6"
+  | "radial8"
+  | "radial12"
+  | "kaleido3"
+  | "kaleido4"
+  | "kaleido6";
 export const SYMMETRY_MODES: readonly SymmetryMode[] = [
   "none",
   "vertical",
@@ -20,118 +33,72 @@ export const SYMMETRY_MODES: readonly SymmetryMode[] = [
   "radial6",
   "radial8",
   "radial12",
+  "kaleido3",
+  "kaleido4",
+  "kaleido6",
 ];
 
-export interface PointTransform {
-  point(x: number, y: number): [number, number];
-  angle(rad: number): number;
-  /** Mirror reflection flips nib angle signs. */
-  mirrored: boolean;
+/** A symmetry transform: a matrix in the drawing's space units. */
+export type PointTransform = Mat3;
+
+/** Mirror axes of a mode (angles of the axis lines, radians), for the guide overlay. */
+export function symmetryAxes(mode: SymmetryMode, angleDeg = 0): number[] {
+  const a = (angleDeg * Math.PI) / 180;
+  switch (mode) {
+    case "vertical":
+      return [a + Math.PI / 2];
+    case "horizontal":
+      return [a];
+    case "quad":
+      return [a, a + Math.PI / 2];
+    default: {
+      const n = foldOf(mode);
+      if (!n) return [];
+      // Radial modes show their sector rays; kaleidoscopes their full mirror lines.
+      const step = mode.startsWith("kaleido") ? Math.PI / n : (2 * Math.PI) / n;
+      return Array.from({ length: n }, (_, i) => a + i * step);
+    }
+  }
 }
 
-const IDENTITY: PointTransform = {
-  point: (x, y) => [x, y],
-  angle: (a) => a,
-  mirrored: false,
-};
-
-function mirrorX(cx: number): PointTransform {
-  return {
-    point: (x, y) => [2 * cx - x, y],
-    angle: (a) => Math.PI - a,
-    mirrored: true,
-  };
-}
-
-function mirrorY(cy: number): PointTransform {
-  return {
-    point: (x, y) => [x, 2 * cy - y],
-    angle: (a) => -a,
-    mirrored: true,
-  };
-}
-
-function rotateAround(cx: number, cy: number, rad: number): PointTransform {
-  const cos = Math.cos(rad);
-  const sin = Math.sin(rad);
-  return {
-    point: (x, y) => {
-      const dx = x - cx;
-      const dy = y - cy;
-      return [cx + dx * cos - dy * sin, cy + dx * sin + dy * cos];
-    },
-    angle: (a) => a + rad,
-    mirrored: false,
-  };
+/** Rotational order of radial and kaleidoscope modes (0 otherwise). */
+export function foldOf(mode: SymmetryMode): number {
+  if (mode.startsWith("radial")) return Number(mode.slice(6));
+  if (mode.startsWith("kaleido")) return Number(mode.slice(7));
+  return 0;
 }
 
 /**
- * Returns the full list of transforms for `mode` around centre `(cx, cy)`.
- * Index 0 is always the identity (the primary stroke).
+ * Returns the full list of transforms for `mode` around centre `(cx, cy)`,
+ * with the mirror axes turned by `angleDeg`. Index 0 is always the identity
+ * (the primary stroke).
  */
-export function symmetryTransforms(mode: SymmetryMode, cx: number, cy: number): PointTransform[] {
+export function symmetryTransforms(mode: SymmetryMode, cx: number, cy: number, angleDeg = 0): Mat3[] {
+  const a = (angleDeg * Math.PI) / 180;
   switch (mode) {
     case "vertical":
-      return [IDENTITY, mirrorX(cx)];
+      return [IDENTITY, reflect(a + Math.PI / 2, cx, cy)];
     case "horizontal":
-      return [IDENTITY, mirrorY(cy)];
+      return [IDENTITY, reflect(a, cx, cy)];
     case "quad":
-      return [IDENTITY, mirrorX(cx), mirrorY(cy), rotateAround(cx, cy, Math.PI)];
-    case "radial4":
-    case "radial6":
-    case "radial8":
-    case "radial12": {
-      const n = Number(mode.slice(6));
-      const list: PointTransform[] = [IDENTITY];
-      for (let i = 1; i < n; i++) list.push(rotateAround(cx, cy, (i / n) * Math.PI * 2));
+      return [IDENTITY, reflect(a + Math.PI / 2, cx, cy), reflect(a, cx, cy), rotate(Math.PI, cx, cy)];
+    case "none":
+      return [IDENTITY];
+    default: {
+      const n = foldOf(mode);
+      const list: Mat3[] = [IDENTITY];
+      for (let i = 1; i < n; i++) list.push(rotate((i / n) * Math.PI * 2, cx, cy));
+      if (mode.startsWith("kaleido")) {
+        // Dihedral group Dn: the rotations plus a mirror through each sector boundary.
+        const mirror = reflect(a, cx, cy);
+        for (let i = 0; i < n; i++) list.push(multiply(rotate((i / n) * Math.PI * 2, cx, cy), mirror));
+      }
       return list;
     }
-    default:
-      return [IDENTITY];
   }
-}
-
-export function transformPoints(flat: readonly number[], t: PointTransform): number[] {
-  const out = new Array<number>(flat.length);
-  for (let i = 0; i + 2 < flat.length; i += 3) {
-    const [nx, ny] = t.point(flat[i]!, flat[i + 1]!);
-    out[i] = nx;
-    out[i + 1] = ny;
-    out[i + 2] = flat[i + 2]!;
-  }
-  return out;
-}
-
-export function transformAngles(angles: readonly number[], t: PointTransform): number[] {
-  return angles.map((a) => t.angle(a));
 }
 
 /** Apply a symmetry transform to a ScribbleItem, producing a mirrored/rotated copy with a new id. */
 export function cloneTransformedItem(item: ScribbleItem, id: string, t: PointTransform): ScribbleItem {
-  let tool = item.tool;
-  let points = transformPoints(item.points, t);
-  const angles = item.angles ? transformAngles(item.angles, t) : undefined;
-  let style = item.style;
-  if (item.kind === "shape" && (tool === "rect" || tool === "ellipse") && points.length >= 6) {
-    if (Math.abs(Math.sin(2 * t.angle(0))) > 1e-6) {
-      points = transformPoints(tool === "rect" ? rectPolyline(item.points) : ellipsePolyline(item.points), t);
-      tool = "polygon";
-      style = { ...style, closed: true };
-    } else {
-      const [x0, y0, , x1, y1] = points as [number, number, number, number, number];
-      points = [Math.min(x0, x1), Math.min(y0, y1), points[2]!, Math.max(x0, x1), Math.max(y0, y1), points[5]!];
-    }
-  }
-  const brush = item.kind === "stroke" ? BRUSHES[item.tool as BrushId] : undefined;
-  if (brush && (brush.tip !== "round" || (brush.renderer === "dab" && !brush.pixelAligned)) && t !== IDENTITY) {
-    const { angle, angleMode } = resolveBrushParams(brush, style.brush);
-    const relative = angleMode === "follow" || (angleMode !== "fixed" && !!angles?.length);
-    const transformed = relative ? (t.mirrored ? -angle : angle) : (t.angle((angle * Math.PI) / 180) * 180) / Math.PI;
-    const norm = ((((transformed + 180) % 360) + 360) % 360) - 180;
-    const ang = Math.round(norm * 10) / 10;
-    if (ang !== angle) style = { ...style, brush: { ...style.brush, ang } };
-  }
-  const copy: ScribbleItem = { ...item, id, tool, points, style };
-  if (angles) copy.angles = angles;
-  return copy;
+  return { ...transformItem(item, t, { quantize: false, bump: false }), id };
 }

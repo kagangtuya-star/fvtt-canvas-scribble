@@ -176,12 +176,24 @@ export function registerKeybindings(getSession: () => Session | null, ui: { onHo
     },
   });
 
+  register("selectAll", {
+    name: k("Keys.SelectAll.Name"),
+    editable: [{ key: "KeyA", modifiers: ["Control"] }],
+    precedence: PRIORITY,
+    onDown: () => {
+      const s = getSession();
+      if (!s?.scene || !layerActive() || s.effective().tool !== "select") return false;
+      s.selectAll();
+      return true;
+    },
+  });
+
   register("cancel", {
     name: k("Keys.Cancel.Name"),
     hint: k("Keys.Cancel.Hint"),
     editable: [{ key: "Escape" }],
     precedence: PRIORITY,
-    onDown: () => getSession()?.cancelGesture() ?? false,
+    onDown: () => getSession()?.dismiss() ?? false,
   });
 
   register("finish", {

@@ -17,6 +17,8 @@ export interface Pt {
 export interface Modifiers {
   shift: boolean;
   alt: boolean;
+  /** Ctrl (or ⌘ on macOS). */
+  ctrl?: boolean;
 }
 
 export const SNAP_ANGLE = Math.PI / 12; // 15°

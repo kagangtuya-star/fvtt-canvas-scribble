@@ -90,7 +90,7 @@ export class PointerInput {
   }
 
   static mods(e: MouseEvent | KeyboardEvent): Modifiers {
-    return { shift: e.shiftKey, alt: e.altKey };
+    return { shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey || e.metaKey };
   }
 
   #swallow(e: Event): void {

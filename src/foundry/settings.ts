@@ -1,3 +1,5 @@
+import { guidesEmpty, normalizeGuides, normalizeSceneGuides } from "../assist/guides-model.ts";
+import type { SceneGuides } from "../assist/guides-model.ts";
 import { MODULE_ID } from "../constants.ts";
 import { DEFAULT_THRESHOLDS, ROLES } from "../core/permissions.ts";
 import type { PermissionThresholds } from "../core/permissions.ts";
@@ -12,7 +14,7 @@ import type { Prefs } from "../state/prefs.ts";
  *
  * World (GM): role thresholds, the per-scene storage budget, fog policy.
  * Client: pen pressure, map size behaviour, palette visibility, confirmation,
- * debug overlay, plus the hidden tool preferences.
+ * debug overlay, plus the hidden tool preferences and per-scene drawing guides.
  */
 
 export const SETTING = {
@@ -34,6 +36,7 @@ export const SETTING = {
   showNames: "showNames",
   debug: "debug",
   prefs: "prefs",
+  guides: "guides",
 } as const;
 
 export type PressureSetting = "auto" | "simulate" | "never";
@@ -212,6 +215,12 @@ export function registerSettings(): void {
     type: Object,
     default: {},
   });
+  reg(SETTING.guides, {
+    scope: "client",
+    config: false,
+    type: Object,
+    default: {},
+  });
 }
 
 const get = (key: string): unknown => {
@@ -273,5 +282,30 @@ export function savePrefs(prefs: Prefs): void {
   saveTimer = setTimeout(() => {
     saveTimer = null;
     void game.settings.set(MODULE_ID, SETTING.prefs, prefs).catch(() => undefined);
+  }, 400);
+}
+
+/** Drawing guides (symmetry centre, rulers) of one scene. */
+export function loadGuides(sceneId: string): SceneGuides {
+  const all = get(SETTING.guides);
+  return normalizeSceneGuides(all && typeof all === "object" ? (all as Record<string, unknown>)[sceneId] : undefined);
+}
+
+let guidesTimer: ReturnType<typeof setTimeout> | null = null;
+const pendingGuides = new Map<string, SceneGuides>();
+
+/** Persist one scene's guides (debounced: handles are dragged). */
+export function saveGuides(sceneId: string, guides: SceneGuides): void {
+  pendingGuides.set(sceneId, guides);
+  if (guidesTimer) clearTimeout(guidesTimer);
+  guidesTimer = setTimeout(() => {
+    guidesTimer = null;
+    const all = normalizeGuides(get(SETTING.guides));
+    for (const [id, g] of pendingGuides) {
+      delete all[id];
+      if (!guidesEmpty(g)) all[id] = g;
+    }
+    pendingGuides.clear();
+    void game.settings.set(MODULE_ID, SETTING.guides, all).catch(() => undefined);
   }, 400);
 }

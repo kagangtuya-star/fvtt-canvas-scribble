@@ -88,13 +88,14 @@ class Root {
     return this.#stored.size;
   }
 
-  put(entry: Entry): void {
+  /** `transient`: being transformed right now — keep it out of the cache tiles until it settles. */
+  put(entry: Entry, transient = false): void {
     const id = entry.item.id;
     if (entry.item.kind === "laser") {
       this.lasers.set(id, entry);
       return;
     }
-    if (this.#routeStored(id, entry.state === "stored" ? entry : undefined)) return;
+    if (this.#routeStored(id, entry.state === "stored" && !transient ? entry : undefined)) return;
     this.sprites.put(entry);
   }
 
@@ -208,6 +209,7 @@ export class SceneRenderer {
   #hidden = false;
   #destroyed = false;
   #editingTextId: string | null = null;
+  #transient: ReadonlySet<string> = new Set();
   #groundElevation = NaN;
   /** Called after each frame (debug overlay). */
   onFrame: ((info: { tier: number; ms: number }) => void) | null = null;
@@ -267,6 +269,16 @@ export class SceneRenderer {
     if (id) this.#unroute(id);
   }
 
+  /** Items being transformed are drawn as sprites; tiles are rebuilt once when the set clears. */
+  setTransient(ids: ReadonlySet<string> | null): void {
+    const before = this.#transient;
+    this.#transient = ids ?? new Set();
+    for (const id of new Set([...before, ...this.#transient])) {
+      const entry = this.#host.store.get(id);
+      if (entry) this.#route(entry);
+    }
+  }
+
   *#roots(): Generator<Root> {
     yield* Object.values(this.#map);
     yield* this.#screen.values();
@@ -313,7 +325,7 @@ export class SceneRenderer {
     const root = this.#rootFor(entry.item);
     const before = this.#where.get(id);
     if (before && before !== root) before.remove(id);
-    root.put(entry);
+    root.put(entry, this.#transient.has(id));
     this.#where.set(id, root);
   }
 

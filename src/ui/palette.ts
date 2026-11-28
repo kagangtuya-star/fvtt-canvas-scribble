@@ -492,6 +492,24 @@ export class Palette {
         break;
       case "text":
         break;
+      case "select":
+        opt("fa-regular fa-square", t("Select.Rect"), p.selectShape === "rect", () =>
+          s.setPrefs({ selectShape: "rect" }),
+        );
+        opt("fa-solid fa-draw-polygon", t("Select.Lasso"), p.selectShape === "lasso", () =>
+          s.setPrefs({ selectShape: "lasso" }),
+        );
+        group.append(h("span", { class: "cs-sep" }));
+        opt(
+          p.selectMatch === "touch" ? "fa-solid fa-object-ungroup" : "fa-solid fa-object-group",
+          labeled(t("Select.Match"), t(p.selectMatch === "touch" ? "Select.Touch" : "Select.Contain")),
+          p.selectMatch === "contain",
+          () => s.setPrefs({ selectMatch: p.selectMatch === "touch" ? "contain" : "touch" }),
+        );
+        group.append(
+          iconButton("fa-solid fa-check-double", t("Select.All"), () => s.selectAll(), { extra: "cs-select-all" }),
+        );
+        break;
       default:
         return null;
     }
@@ -542,7 +560,7 @@ export class Palette {
       });
       b.addEventListener("click", () => {
         s.setPrefs({ color: c });
-        if (s.selectedId) s.recolorSelected(value);
+        if (s.selection.size) s.recolorSelected(value);
       });
       return b;
     };
@@ -559,7 +577,7 @@ export class Palette {
     custom.addEventListener("change", () => {
       const c = custom.value.toLowerCase();
       s.setPrefs({ color: c, recent: pushRecent(p, c) });
-      if (s.selectedId) s.recolorSelected(c);
+      if (s.selection.size) s.recolorSelected(c);
     });
     const swapBtn = h(
       "button",

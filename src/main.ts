@@ -114,6 +114,7 @@ Hooks.once("setup", () => {
   a.input.onPointer = (cx, cy, over, type) => a.cursor.update(cx, cy, over, type);
   session.onTextRequest = (req) => a.text.open(req);
   session.onTextEditingChange = (id) => a.renderer?.setEditingText(id);
+  session.onTransientChange = (ids) => a.renderer?.setTransient(ids);
   session.onRefresh = () => a.renderer?.refresh();
   session.media.onDisplay = (key, data) => a.renderer?.media.show(key, data);
   session.onChange(() => {

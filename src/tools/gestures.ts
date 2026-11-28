@@ -1,3 +1,4 @@
+import type { StrokeConstraint } from "../assist/constraint.ts";
 import { BRUSHES, resolveBrushParams } from "../brush/brushes.ts";
 import { recognizeQuickShape } from "../brush/quickshape.ts";
 import { StrokeRecorder } from "../brush/recorder.ts";
@@ -39,8 +40,15 @@ export interface Target {
   anchor?: [number, number];
   /** Grid snap step in space units (0 = disabled). */
   snapStep?: number;
-  /** Symmetry centre in space units. */
-  symmetry?: { mode: SymmetryMode; cx: number; cy: number };
+  /** Symmetry centre in space units and axis angle (degrees). */
+  symmetry?: { mode: SymmetryMode; cx: number; cy: number; angle?: number };
+}
+
+/** Symmetry transforms of a target (identity only when symmetry is off). */
+export function targetTransforms(target: Target): PointTransform[] {
+  const sym = target.symmetry;
+  if (!sym || sym.mode === "none") return symmetryTransforms("none", 0, 0);
+  return symmetryTransforms(sym.mode, sym.cx, sym.cy, sym.angle ?? 0);
 }
 
 export interface ToolHost {
@@ -111,9 +119,13 @@ interface FreehandSpec {
   /** UI size. */
   size: number;
   extra?: Partial<ScribbleItem>;
+  /** Ruler constraint for this stroke. */
+  constraint?: StrokeConstraint | null;
 }
 
 const QUICKSHAPE_HOLD_MS = 380;
+/** A resting pointer feeds the time-window stabilizer at this interval (ms). */
+const STABILIZER_TICK_MS = 16;
 
 export class FreehandGesture implements Gesture {
   readonly #host: ToolHost;
@@ -125,6 +137,9 @@ export class FreehandGesture implements Gesture {
   #item: ScribbleItem;
   #width: number;
   #holdTimer: ReturnType<typeof setTimeout> | null = null;
+  #tickTimer: ReturnType<typeof setInterval> | null = null;
+  #lastSample: ClientSample;
+  #lastMoveAt = 0;
   #snapped: ScribbleItem | null = null;
 
   constructor(host: ToolHost, target: Target, spec: FreehandSpec, first: ClientSample) {
@@ -133,15 +148,36 @@ export class FreehandGesture implements Gesture {
     this.#spec = spec;
     const brush = spec.kind === "stroke" ? BRUSHES[spec.tool as BrushId] : null;
     this.#width = target.space.widthFor(spec.size, brush?.widthScale ?? 1);
-    this.#transforms =
-      target.symmetry && target.symmetry.mode !== "none"
-        ? symmetryTransforms(target.symmetry.mode, target.symmetry.cx, target.symmetry.cy)
-        : symmetryTransforms("none", 0, 0);
+    this.#transforms = targetTransforms(target);
     this.#mirrorIds = this.#transforms.slice(1).map(() => randomId(16));
     this.#rec = this.#recorder();
+    this.#lastSample = first;
     this.#rec.add(toSpace(target, first, !!brush?.pixelAligned && !!target.snapStep));
     this.#item = host.makeItem(target, spec.kind, spec.tool, this.#width, this.#rec.preview(), spec.extra);
     this.#emitLive(this.#item);
+    if (this.#rec.needsTick) this.#tickTimer = setInterval(() => this.#tick(), STABILIZER_TICK_MS);
+  }
+
+  /** Resting pointer: keep the time-window stabilizer converging towards it. */
+  #tick(): void {
+    if (this.#snapped || !this.#rec.needsTick) return;
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    if (now - this.#lastMoveAt < STABILIZER_TICK_MS * 1.5) return;
+    const brush = this.#spec.kind === "stroke" ? BRUSHES[this.#spec.tool as BrushId] : null;
+    const before = this.#rec.pointCount;
+    this.#rec.add(
+      toSpace(this.#target, { ...this.#lastSample, time: now }, !!brush?.pixelAligned && !!this.#target.snapStep),
+    );
+    if (this.#rec.pointCount === before) return;
+    if (this.#rec.full) this.#chain();
+    const angles = this.#rec.previewAngles();
+    this.#item = { ...this.#item, points: this.#rec.preview(), ...(angles ? { angles } : {}) };
+    this.#emitLive(this.#item);
+  }
+
+  #stopTick(): void {
+    if (this.#tickTimer) clearInterval(this.#tickTimer);
+    this.#tickTimer = null;
   }
 
   #recorder(): StrokeRecorder {
@@ -160,6 +196,9 @@ export class FreehandGesture implements Gesture {
       recordAngles,
       stabilizerMode: brush?.pixelAligned ? "off" : p.stabilizer,
       stabilizerStrength: p.stabilizerStrength,
+      dejitter: brush?.pixelAligned ? 0 : p.dejitter,
+      constraint: this.#spec.constraint ?? null,
+      smoothing: brush?.pixelAligned ? 0 : p.smoothing,
       unitsPerPx: u,
       minDistance: 0.6 * u,
       tolerance: 0.35 * u,
@@ -225,6 +264,9 @@ export class FreehandGesture implements Gesture {
       this.#rec.add(toSpace(this.#target, s, snap));
       if (this.#rec.full && !this.#rec.line) this.#chain();
     }
+    const last = samples.at(-1);
+    if (last) this.#lastSample = last;
+    this.#lastMoveAt = typeof performance !== "undefined" ? performance.now() : Date.now();
     const angles = this.#rec.previewAngles();
     this.#item = { ...this.#item, points: this.#rec.preview(), ...(angles ? { angles } : {}) };
     this.#emitLive(this.#item);
@@ -268,14 +310,24 @@ export class FreehandGesture implements Gesture {
     else for (const it of batch) this.#host.commit(it);
   }
 
-  up(_s: ClientSample, mods: Modifiers): boolean {
+  up(s: ClientSample, mods: Modifiers): boolean {
     this.#clearHold();
+    this.#stopTick();
     if (this.#snapped) {
       this.#commitAll(this.#snapped);
       this.#snapped = null;
       return false;
     }
     this.#rec.line = mods.shift && this.#spec.kind === "stroke";
+    // The lift-off position counts: browsers may report it only with pointerup.
+    const brush = this.#spec.kind === "stroke" ? BRUSHES[this.#spec.tool as BrushId] : null;
+    const last = this.#rec.last;
+    const lift = toSpace(this.#target, s, !!brush?.pixelAligned && !!this.#target.snapStep);
+    if (!last || lift.x !== last.x || lift.y !== last.y) {
+      this.#rec.add({ ...lift, pressure: last?.pressure ?? lift.pressure });
+      if (this.#rec.full && !this.#rec.line) this.#chain();
+    }
+    this.#rec.finishTip(this.#host.prefs.stabilizerFinish);
     let { points, angles } = this.#rec.finishWithAngles();
     if (points.length < 6) {
       // A tap: a dot (two coincident points so every renderer draws a blot).
@@ -295,8 +347,45 @@ export class FreehandGesture implements Gesture {
 
   cancel(): void {
     this.#clearHold();
+    this.#stopTick();
     this.#host.cancel(this.#item.id);
     for (const id of this.#mirrorIds) this.#host.cancel(id);
+  }
+}
+
+/** Live and commit helpers for gestures that fan out symmetry companions. */
+class Companions {
+  readonly #host: ToolHost;
+  readonly #transforms: PointTransform[];
+  readonly #ids: string[];
+
+  constructor(host: ToolHost, target: Target) {
+    this.#host = host;
+    this.#transforms = targetTransforms(target);
+    this.#ids = this.#transforms.slice(1).map(() => randomId(16));
+  }
+
+  live(primary: ScribbleItem): void {
+    this.#host.live(primary);
+    for (let i = 1; i < this.#transforms.length; i++)
+      this.#host.live(cloneTransformedItem(primary, this.#ids[i - 1]!, this.#transforms[i]!));
+  }
+
+  commit(primary: ScribbleItem): void {
+    if (this.#transforms.length <= 1) {
+      this.#host.commit(primary);
+      return;
+    }
+    const batch = [primary];
+    for (let i = 1; i < this.#transforms.length; i++)
+      batch.push(cloneTransformedItem(primary, this.#ids[i - 1]!, this.#transforms[i]!));
+    if (this.#host.commitBatch) this.#host.commitBatch(batch);
+    else for (const it of batch) this.#host.commit(it);
+  }
+
+  cancel(primaryId: string): void {
+    this.#host.cancel(primaryId);
+    for (const id of this.#ids) this.#host.cancel(id);
   }
 }
 
@@ -305,10 +394,11 @@ export class FreehandGesture implements Gesture {
 /* -------------------------------------------- */
 
 export class ShapeGesture implements Gesture {
-  readonly #host: ToolHost;
   readonly #target: Target;
   readonly #shape: ShapeId;
   readonly #start: InputSample;
+  readonly #companions: Companions;
+  readonly #constraint: StrokeConstraint | null;
   #item: ScribbleItem;
 
   constructor(
@@ -318,11 +408,14 @@ export class ShapeGesture implements Gesture {
     size: number,
     first: ClientSample,
     extra?: Partial<ScribbleItem>,
+    constraint: StrokeConstraint | null = null,
   ) {
-    this.#host = host;
     this.#target = target;
     this.#shape = shape;
     this.#start = toSpace(target, first, !!target.snapStep);
+    this.#companions = new Companions(host, target);
+    // Rulers constrain straight lines only (the start point is the constraint's origin).
+    this.#constraint = shape === "line" || shape === "arrow" ? constraint : null;
     const w = target.space.widthFor(size);
     const pts = dragShape(shape, this.#start, this.#start, { shift: false, alt: false });
     this.#item = host.makeItem(target, "shape", shape, w, pts, extra);
@@ -333,13 +426,17 @@ export class ShapeGesture implements Gesture {
   move(samples: ClientSample[], mods: Modifiers): void {
     const last = samples.at(-1);
     if (!last) return;
-    const points = quantizePoints(
-      dragShape(this.#shape, this.#start, toSpace(this.#target, last, !!this.#target.snapStep), mods),
-    );
+    let end: { x: number; y: number } = toSpace(this.#target, last, !!this.#target.snapStep);
+    let shapeMods = mods;
+    if (this.#constraint) {
+      end = this.#constraint.project(end.x, end.y);
+      if (this.#constraint.locked) shapeMods = { ...mods, shift: false };
+    }
+    const points = quantizePoints(dragShape(this.#shape, this.#start, end, shapeMods));
     this.#item = { ...this.#item, points };
     if (!this.#started && shapeIsDegenerate(points, 2 * px(this.#target))) return;
     this.#started = true;
-    this.#host.live(this.#item);
+    this.#companions.live(this.#item);
   }
 
   up(s: ClientSample, mods: Modifiers): boolean {
@@ -348,12 +445,12 @@ export class ShapeGesture implements Gesture {
       this.cancel();
       return false;
     }
-    this.#host.commit(this.#item);
+    this.#companions.commit(this.#item);
     return false;
   }
 
   cancel(): void {
-    if (this.#started) this.#host.cancel(this.#item.id);
+    if (this.#started) this.#companions.cancel(this.#item.id);
   }
 }
 
@@ -362,23 +459,23 @@ export class ShapeGesture implements Gesture {
 /* -------------------------------------------- */
 
 export class PolygonGesture implements Gesture {
-  readonly #host: ToolHost;
   readonly #target: Target;
   readonly #width: number;
   readonly #vertices: number[] = [];
+  readonly #companions: Companions;
   #item: ScribbleItem;
   #lastClick = 0;
   #done = false;
 
   constructor(host: ToolHost, target: Target, size: number, first: ClientSample, extra?: Partial<ScribbleItem>) {
-    this.#host = host;
     this.#target = target;
     this.#width = target.space.widthFor(size);
+    this.#companions = new Companions(host, target);
     const p = toSpace(target, first, !!target.snapStep);
     this.#vertices.push(p.x, p.y, 0.5);
     this.#lastClick = first.time;
     this.#item = host.makeItem(target, "shape", "polygon", this.#width, [...this.#vertices, p.x, p.y, 0.5], extra);
-    host.live(this.#item);
+    this.#companions.live(this.#item);
   }
 
   /** Snap radius for closing on the first vertex (CSS px). */
@@ -398,7 +495,7 @@ export class PolygonGesture implements Gesture {
       pts.push(c.x, c.y, 0.5);
     }
     this.#item = { ...this.#item, points: quantizePoints(pts) };
-    this.#host.live(this.#item);
+    this.#companions.live(this.#item);
   }
 
   move(samples: ClientSample[], mods: Modifiers): void {
@@ -444,7 +541,7 @@ export class PolygonGesture implements Gesture {
     this.#done = true;
     const pts = quantizePoints(this.#vertices);
     if (pts.length < 6 || polylineLength(pts) < 3 * px(this.#target)) {
-      this.#host.cancel(this.#item.id);
+      this.#companions.cancel(this.#item.id);
       return;
     }
     const style = { ...this.#item.style };
@@ -453,13 +550,13 @@ export class PolygonGesture implements Gesture {
       delete style.closed;
       delete style.fill;
     }
-    this.#host.commit({ ...this.#item, points: pts, style });
+    this.#companions.commit({ ...this.#item, points: pts, style });
   }
 
   cancel(): void {
     if (this.#done) return;
     this.#done = true;
-    this.#host.cancel(this.#item.id);
+    this.#companions.cancel(this.#item.id);
   }
 }
 

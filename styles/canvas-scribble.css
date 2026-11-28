@@ -833,76 +833,116 @@ body.canvas-scribble-cursor #board {
   stroke-width: 1.25;
   stroke-dasharray: 6 5;
 }
-.cs-sym-center {
+.cs-sym-arm,
+.cs-sel-arm {
+  stroke: rgba(238, 155, 58, 0.8);
+  stroke-width: 1.25;
+}
+.cs-sym-center,
+.cs-sym-knob {
   fill: rgba(238, 155, 58, 0.85);
   stroke: rgba(0, 0, 0, 0.65);
   stroke-width: 1.5;
 }
-
-.cs-select-box {
-  position: fixed;
-  border: 1.5px dashed var(--color-warm-1, #ee9b3a);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
-  pointer-events: none;
+.cs-sym-center {
+  cursor: move;
 }
-.cs-select-box[hidden] {
-  display: none;
-}
-.cs-handle {
-  position: absolute;
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-  background: #fff;
-  border: 1.5px solid var(--color-warm-2, #c9593f);
-  pointer-events: all;
-  cursor: nwse-resize;
-  touch-action: none;
-}
-.cs-handle-left,
-.cs-handle-right {
-  top: calc(50% - 5px);
-  cursor: ew-resize;
-}
-.cs-handle-left {
-  left: -6px;
-}
-.cs-handle-right {
-  right: -6px;
-}
-.cs-handle-nw {
-  left: -6px;
-  top: -6px;
-}
-.cs-handle-ne {
-  right: -6px;
-  top: -6px;
-  cursor: nesw-resize;
-}
-.cs-handle-sw {
-  left: -6px;
-  bottom: -6px;
-  cursor: nesw-resize;
-}
-.cs-handle-se {
-  right: -6px;
-  bottom: -6px;
-}
-.cs-handle-rot {
-  left: 50%;
-  top: -26px;
-  margin-left: -6px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
+.cs-sym-knob {
+  fill: #fff;
   cursor: grab;
 }
-.cs-select-actions {
-  position: absolute;
-  left: 50%;
-  bottom: -36px;
-  transform: translateX(-50%);
+.cs-grab {
+  pointer-events: all;
+  touch-action: none;
+}
+
+/* Rulers */
+.cs-ruler-line,
+.cs-ruler-curve {
+  fill: none;
+  stroke: rgba(92, 182, 230, 0.55);
+  stroke-width: 1;
+}
+.cs-ruler-ray {
+  stroke-dasharray: 3 6;
+  stroke: rgba(92, 182, 230, 0.32);
+}
+.cs-ruler-horizon {
+  stroke: rgba(92, 182, 230, 0.6);
+}
+.cs-ruler-curve {
+  stroke-width: 1.5;
+  stroke-dasharray: 8 4;
+}
+.cs-ruler-line.off,
+.cs-ruler-curve.off {
+  stroke: rgba(160, 160, 160, 0.3);
+}
+.cs-ruler-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  cursor: copy;
+}
+.cs-ruler-handle {
+  fill: rgba(92, 182, 230, 0.95);
+  stroke: rgba(0, 0, 0, 0.7);
+  stroke-width: 1.5;
+  cursor: move;
+}
+.cs-ruler-list {
   display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cs-ruler-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+}
+
+/* Selection frame */
+.cs-sel-frame {
+  fill: none;
+  stroke: var(--color-warm-1, #ee9b3a);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+}
+.cs-sel-region {
+  fill: rgba(238, 155, 58, 0.08);
+  stroke: var(--color-warm-1, #ee9b3a);
+  stroke-width: 1.25;
+  stroke-dasharray: 4 4;
+  animation: cs-ants 0.6s linear infinite;
+}
+@keyframes cs-ants {
+  to {
+    stroke-dashoffset: -8;
+  }
+}
+.cs-handle-svg {
+  fill: #fff;
+  stroke: var(--color-warm-2, #c9593f);
+  stroke-width: 1.5;
+}
+.cs-handle-rot {
+  cursor: grab;
+}
+.cs-sel-pivot {
+  fill: rgba(255, 255, 255, 0.9);
+  stroke: var(--color-warm-2, #c9593f);
+  stroke-width: 1.5;
+  cursor: move;
+}
+.cs-sel-pivot-line {
+  stroke: var(--color-warm-2, #c9593f);
+  stroke-width: 1;
+}
+.cs-select-actions {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
   gap: 3px;
   padding: 2px;
   border-radius: 5px;
@@ -910,7 +950,25 @@ body.canvas-scribble-cursor #board {
   border: 1px solid var(--color-cool-4, #302831);
   pointer-events: all;
 }
+.cs-select-actions[hidden] {
+  display: none;
+}
+.cs-select-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
 .cs-select-actions .cs-btn {
   width: 26px;
   height: 26px;
+}
+.cs-select-numeric label {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+}
+.cs-select-numeric .cs-num {
+  width: 58px;
+  height: 24px;
 }

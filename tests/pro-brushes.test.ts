@@ -133,8 +133,8 @@ describe("pro brushes & sanitize", () => {
 });
 
 describe("stabilizer & pen angle recorder", () => {
-  it("smooths jitter in both one-euro and lazy modes", () => {
-    const euro = new StrokeStabilizer({ mode: "one-euro", strength: 0.8, unitsPerPx: 1 });
+  it("smooths jitter with dejitter and in lazy mode", () => {
+    const euro = new StrokeStabilizer({ mode: "off", strength: 0.5, dejitter: 0.8, unitsPerPx: 1 });
     const lazy = new StrokeStabilizer({ mode: "lazy", strength: 0.5, unitsPerPx: 1 });
     const p0 = euro.filter(0, 0, 0);
     const p1 = euro.filter(10, 8, 16);
@@ -294,10 +294,14 @@ describe("symmetry & select/transform", () => {
     assert.equal(scaled.size, 8);
 
     const rect = makeItem({ kind: "shape", tool: "rect", points: [0, 0, 0.5, 20, 10, 0.5] });
-    const rotated = rotateItem(rect, 10, 5, Math.PI / 2);
+    const rotated = rotateItem(rect, 10, 5, Math.PI / 3);
     assert.equal(rotated.tool, "polygon");
     assert.equal(rotated.style.closed, true);
     assert.equal(rotated.points.length, 12);
+    // Quarter turns keep an axis-aligned rectangle (same area, swapped sides).
+    const quarter = rotateItem(rect, 10, 5, Math.PI / 2);
+    assert.equal(quarter.tool, "rect");
+    assert.deepEqual(quarter.points, quantizePoints([5, -5, 0.5, 15, 15, 0.5]));
   });
 });
 

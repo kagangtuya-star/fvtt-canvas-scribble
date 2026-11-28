@@ -6,7 +6,7 @@ import { SYMMETRY_MODES } from "../brush/symmetry.ts";
 import { ANGLE_MODES, BLEND_MODES, SCHEMA_VERSION } from "../core/types.ts";
 import type { AngleMode, BlendMode, BrushId, BrushOverride, ScribbleItem } from "../core/types.ts";
 import { randomId } from "../core/util.ts";
-import { t } from "../i18n.ts";
+import { t, tf } from "../i18n.ts";
 import type { Session } from "../session.ts";
 import { activeBrushId, brushBlend, brushOpacity, normalizePrefs } from "../state/prefs.ts";
 import type { BrushPreset, Prefs } from "../state/prefs.ts";
@@ -413,27 +413,77 @@ export function buildAidsMenu(session: Session): HTMLElement {
   const p = session.prefs;
   const wrap = h("div", { class: "cs-aids" });
 
-  // Stabilizer
+  const slider = (
+    label: string,
+    value: number,
+    min: number,
+    max: number,
+    step: number,
+    unit: string,
+    set: (v: number) => void,
+  ) => {
+    const out = h("output", { class: "cs-studio-val" }, `${value}${unit}`);
+    const sl = h("input", { type: "range", min, max, step, value, "aria-label": label }) as HTMLInputElement;
+    sl.addEventListener("input", () => (out.textContent = `${sl.value}${unit}`));
+    sl.addEventListener("change", () => set(Number(sl.value)));
+    return h("label", { class: "cs-studio-row" }, h("span", {}, label), sl, out);
+  };
+  const toggle = (cls: string, label: string, on: boolean, click: () => void, hint?: string) => {
+    const b = h(
+      "button",
+      {
+        type: "button",
+        class: `cs-preset ${on ? "active" : ""}`,
+        "aria-pressed": String(on),
+        "data-tooltip": hint ?? null,
+      },
+      icon(cls),
+      label,
+    );
+    b.addEventListener("click", click);
+    return b;
+  };
+
+  // Stabilizer: dejitter (always-on smoothing of hand tremor), the stabilizer proper, post-smoothing.
+  wrap.append(
+    slider(t("Aids.Dejitter"), Math.round(p.dejitter * 100), 0, 100, 5, "%", (v) =>
+      session.setPrefs({ dejitter: v / 100 }),
+    ),
+  );
   const stabRow = h("div", { class: "cs-presets" });
   for (const mode of STABILIZER_MODES) {
     const b = h(
       "button",
       { type: "button", class: `cs-preset ${p.stabilizer === mode ? "active" : ""}` },
-      t(`Stabilizer.${mode === "one-euro" ? "OneEuro" : cap(mode)}`),
+      t(`Stabilizer.${cap(mode)}`),
     );
     b.addEventListener("click", () => session.setPrefs({ stabilizer: mode }));
     stabRow.append(b);
   }
   wrap.append(h("span", { class: "cs-label" }, t("Aids.Stabilizer")), stabRow);
-
   if (p.stabilizer !== "off") {
-    const val = Math.round(p.stabilizerStrength * 100);
-    const out = h("output", { class: "cs-studio-val" }, `${val}%`);
-    const sl = h("input", { type: "range", min: 5, max: 100, step: 5, value: val }) as HTMLInputElement;
-    sl.addEventListener("input", () => (out.textContent = `${sl.value}%`));
-    sl.addEventListener("change", () => session.setPrefs({ stabilizerStrength: Number(sl.value) / 100 }));
-    wrap.append(h("label", { class: "cs-studio-row" }, h("span", {}, t("Aids.Strength")), sl, out));
+    wrap.append(
+      slider(t("Aids.Strength"), Math.round(p.stabilizerStrength * 100), 5, 100, 5, "%", (v) =>
+        session.setPrefs({ stabilizerStrength: v / 100 }),
+      ),
+      h(
+        "div",
+        { class: "cs-presets" },
+        toggle(
+          "fa-solid fa-flag-checkered",
+          t("Aids.Finish"),
+          p.stabilizerFinish,
+          () => session.setPrefs({ stabilizerFinish: !p.stabilizerFinish }),
+          t("Aids.FinishHint"),
+        ),
+      ),
+    );
   }
+  wrap.append(
+    slider(t("Aids.Smoothing"), Math.round(p.smoothing * 100), 0, 100, 5, "%", (v) =>
+      session.setPrefs({ smoothing: v / 100 }),
+    ),
+  );
 
   // Symmetry
   const symRow = h("div", { class: "cs-presets" });
@@ -447,25 +497,127 @@ export function buildAidsMenu(session: Session): HTMLElement {
     symRow.append(b);
   }
   wrap.append(h("span", { class: "cs-label" }, t("Aids.Symmetry")), symRow);
+  if (p.symmetry !== "none") {
+    const mode = session.effective().mode;
+    wrap.append(
+      slider(t("Aids.Angle"), p.symmetryAngle, -180, 180, 5, "°", (v) => session.setPrefs({ symmetryAngle: v })),
+      h(
+        "div",
+        { class: "cs-presets" },
+        toggle("fa-solid fa-crosshairs", t("Aids.ResetCenter"), false, () => {
+          session.setSymmetryCenter(mode, null);
+          session.setPrefs({ symmetryAngle: 0 });
+        }),
+      ),
+      h("p", { class: "cs-hint" }, t("Aids.SymmetryHint")),
+    );
+  }
 
   // Toggles: QuickShape & Grid Snap
-  const toggles = h("div", { class: "cs-presets" });
-  const qs = h(
-    "button",
-    { type: "button", class: `cs-preset ${p.quickShape ? "active" : ""}` },
-    icon("fa-solid fa-shapes"),
-    t("Aids.QuickShape"),
+  const toggles = h(
+    "div",
+    { class: "cs-presets" },
+    toggle("fa-solid fa-shapes", t("Aids.QuickShape"), p.quickShape, () =>
+      session.setPrefs({ quickShape: !p.quickShape }),
+    ),
+    toggle("fa-solid fa-magnet", t("Aids.GridSnap"), p.gridSnap, () => session.setPrefs({ gridSnap: !p.gridSnap })),
   );
-  qs.addEventListener("click", () => session.setPrefs({ quickShape: !p.quickShape }));
-  const gs = h(
-    "button",
-    { type: "button", class: `cs-preset ${p.gridSnap ? "active" : ""}` },
-    icon("fa-solid fa-magnet"),
-    t("Aids.GridSnap"),
-  );
-  gs.addEventListener("click", () => session.setPrefs({ gridSnap: !p.gridSnap }));
-  toggles.append(qs, gs);
   wrap.append(h("span", { class: "cs-label" }, t("Aids.Snap")), toggles);
+
+  // Rulers
+  wrap.append(
+    h("span", { class: "cs-label" }, t("Aids.Rulers")),
+    h(
+      "div",
+      { class: "cs-presets" },
+      toggle(
+        "fa-solid fa-ruler-combined",
+        t("Aids.RulersOn"),
+        p.rulers,
+        () => session.setPrefs({ rulers: !p.rulers }),
+        t("Aids.RulersHint"),
+      ),
+      toggle(
+        "fa-solid fa-pen-ruler",
+        t("Aids.EditRulers"),
+        session.rulerEdit,
+        () => session.setRulerEdit(!session.rulerEdit),
+        t("Aids.EditHint"),
+      ),
+    ),
+  );
+  const add = h("div", { class: "cs-presets" });
+  for (const [preset, cls, key] of [
+    ["perspective1", "fa-solid fa-1", "Aids.AddPerspective1"],
+    ["perspective2", "fa-solid fa-2", "Aids.AddPerspective2"],
+    ["perspective3", "fa-solid fa-3", "Aids.AddPerspective3"],
+    ["curve", "fa-solid fa-bezier-curve", "Aids.AddCurve"],
+  ] as const) {
+    const b = h(
+      "button",
+      { type: "button", class: "cs-preset", "data-tooltip": t(key), "aria-label": t(key) },
+      icon(cls),
+    );
+    b.addEventListener("click", () => {
+      if (session.addRuler(preset) && !session.rulerEdit) session.setRulerEdit(true);
+    });
+    add.append(b);
+  }
+  wrap.append(add);
+  const rulers = session.rulersFor(session.effective().mode);
+  if (rulers.length) {
+    const list = h("div", { class: "cs-ruler-list" });
+    rulers.forEach((r, i) => {
+      const name =
+        r.kind === "curve" ? `${t("Aids.Curve")} ${i + 1}` : `${tf("Aids.Perspective", { n: r.vps.length })} ${i + 1}`;
+      const row = h(
+        "div",
+        { class: "cs-ruler-row" },
+        toggle(r.on ? "fa-solid fa-eye" : "fa-solid fa-eye-slash", name, r.on, () =>
+          session.updateRuler(r.id, { on: !r.on }),
+        ),
+      );
+      if (r.kind === "curve") {
+        row.append(
+          toggle("fa-solid fa-circle-notch", t("Aids.Closed"), r.closed, () =>
+            session.updateRuler(r.id, { closed: !r.closed }),
+          ),
+          toggle(
+            "fa-solid fa-grip-lines",
+            t("Aids.Parallel"),
+            r.parallel,
+            () => session.updateRuler(r.id, { parallel: !r.parallel }),
+            t("Aids.ParallelHint"),
+          ),
+        );
+      } else {
+        row.append(
+          toggle(
+            "fa-solid fa-hashtag",
+            t("Aids.Parallels"),
+            r.parallels,
+            () => session.updateRuler(r.id, { parallels: !r.parallels }),
+            t("Aids.ParallelsHint"),
+          ),
+        );
+      }
+      const del = h(
+        "button",
+        {
+          type: "button",
+          class: "cs-preset cs-preset-del",
+          "aria-label": t("Aids.RemoveRuler"),
+          "data-tooltip": t("Aids.RemoveRuler"),
+        },
+        "×",
+      );
+      del.addEventListener("click", () => session.removeRuler(r.id));
+      row.append(del);
+      list.append(row);
+    });
+    wrap.append(list);
+  }
+  wrap.append(h("p", { class: "cs-hint" }, t("Aids.AltHint")));
 
   return wrap;
 }

@@ -161,7 +161,7 @@ export function defineLayer(h: LayerHooks): unknown {
     }
 
     _onDismissKey(_event: KeyboardEvent) {
-      return h.session.cancelGesture();
+      return h.session.dismiss();
     }
 
     _onCycleViewKey(_event: KeyboardEvent) {

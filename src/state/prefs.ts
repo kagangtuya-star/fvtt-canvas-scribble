@@ -47,6 +47,11 @@ export const ERASER_VARIANTS: readonly EraserVariant[] = ["stroke", "partial"];
 
 export type EraserTip = "round" | "rect";
 
+/** Select tool: region shape dragged on empty space, and how it matches items. */
+export type SelectShape = "rect" | "lasso";
+export const SELECT_SHAPES: readonly SelectShape[] = ["rect", "lasso"];
+export type SelectMatch = "touch" | "contain";
+
 export type HeadStyle = "end" | "both";
 
 /** User-saved custom brush preset. */
@@ -92,10 +97,23 @@ export interface Prefs {
   /** Pointer stabilization mode & strength (0..1). */
   stabilizer: StabilizerMode;
   stabilizerStrength: number;
+  /** Catch the lagging stabilizer up to the pen when it is lifted. */
+  stabilizerFinish: boolean;
+  /** One Euro dejitter strength (0 = off). */
+  dejitter: number;
+  /** Post-stroke curve smoothing (0 = off). */
+  smoothing: number;
   /** Hold at end of a freehand stroke to snap into a clean geometric shape. */
   quickShape: boolean;
   /** Mirror / radial symmetry mode. */
   symmetry: SymmetryMode;
+  /** Rotation of the symmetry axes (degrees). */
+  symmetryAngle: number;
+  /** Perspective and curve rulers snap strokes. */
+  rulers: boolean;
+  /** Select tool region and matching. */
+  selectShape: SelectShape;
+  selectMatch: SelectMatch;
   /** Snap shapes, lines and pixel strokes to the Foundry map grid. */
   gridSnap: boolean;
   /** Hand-drawn roughness for shapes & areas (0 = crisp, 0.5..3 = roughjs sketch). */
@@ -172,8 +190,15 @@ export const DEFAULT_PREFS: Prefs = {
   presets: [],
   stabilizer: "off",
   stabilizerStrength: 0.45,
+  stabilizerFinish: true,
+  dejitter: 0,
+  smoothing: 0,
   quickShape: true,
   symmetry: "none",
+  symmetryAngle: 0,
+  rulers: true,
+  selectShape: "rect",
+  selectMatch: "touch",
   gridSnap: false,
   roughness: 0,
   fillPattern: "solid",
@@ -309,6 +334,9 @@ export function normalizePrefs(raw: unknown): Prefs {
     const v = numIn(r.lifetime?.[m], 0, LIMITS.maxLifetimeMs, d.lifetime[m]);
     return m === "screen" && v === 0 ? d.lifetime.screen : v;
   };
+  // Before 1.1 the One Euro filter was a stabilizer mode; it is now the separate dejitter stage.
+  const legacyEuro = r.stabilizer === "one-euro";
+  const stabilizerStrength = numIn(r.stabilizerStrength, 0, 1, d.stabilizerStrength);
   const palette =
     r.palette && typeof r.palette === "object" && Number.isFinite(r.palette.x) && Number.isFinite(r.palette.y)
       ? { x: Math.round(r.palette.x), y: Math.round(r.palette.y) }
@@ -335,9 +363,16 @@ export function normalizePrefs(raw: unknown): Prefs {
     brushParams,
     presets,
     stabilizer: pick(r.stabilizer, STABILIZER_MODES, d.stabilizer),
-    stabilizerStrength: numIn(r.stabilizerStrength, 0, 1, d.stabilizerStrength),
+    stabilizerStrength,
+    stabilizerFinish: bool(r.stabilizerFinish, d.stabilizerFinish),
+    dejitter: legacyEuro && r.dejitter === undefined ? stabilizerStrength : numIn(r.dejitter, 0, 1, d.dejitter),
+    smoothing: numIn(r.smoothing, 0, 1, d.smoothing),
     quickShape: bool(r.quickShape, d.quickShape),
     symmetry: pick(r.symmetry, SYMMETRY_MODES, d.symmetry),
+    symmetryAngle: numIn(r.symmetryAngle, -180, 180, d.symmetryAngle),
+    rulers: bool(r.rulers, d.rulers),
+    selectShape: pick(r.selectShape, SELECT_SHAPES, d.selectShape),
+    selectMatch: r.selectMatch === "contain" ? "contain" : "touch",
     gridSnap: bool(r.gridSnap, d.gridSnap),
     roughness: numIn(r.roughness, 0, 3, d.roughness),
     fillPattern: pick(r.fillPattern, FILL_PATTERNS, d.fillPattern),

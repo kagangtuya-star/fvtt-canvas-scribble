@@ -1,6 +1,8 @@
 import { LIMITS } from "../constants.ts";
 import { quantizeAngles, quantizePoints } from "../core/codec.ts";
 import { simplifyIndicesToLimit, simplifyToLimit } from "../core/geometry.ts";
+import { LineConstraint } from "../assist/constraint.ts";
+import type { StrokeConstraint } from "../assist/constraint.ts";
 import { StrokeStabilizer } from "./stabilizer.ts";
 import type { StabilizerMode } from "./stabilizer.ts";
 
@@ -18,8 +20,10 @@ import type { StabilizerMode } from "./stabilizer.ts";
  * to smoothed stroke-direction simulation so tilt/twist brushes remain
  * expressive even without a drawing tablet.
  *
- * Stabilization (One Euro Filter or Lazy Brush) and streamline are applied here
- * so renderers can draw stored points deterministically without lag.
+ * Pipeline per sample: dejitter (One Euro) → stabilizer (lazy / average) →
+ * streamline → ruler constraint → stored point. Everything happens here so
+ * renderers draw stored points deterministically without lag. On pen up the
+ * stabilizer's tail is caught up and optional curve smoothing is applied.
  */
 
 export type PressureMode = "auto" | "simulate" | "off";
@@ -116,6 +120,12 @@ export interface RecorderOptions {
   stabilizerMode?: StabilizerMode;
   /** Stabilizer strength 0..1 (default 0). */
   stabilizerStrength?: number;
+  /** One Euro dejitter strength 0..1 (default 0). */
+  dejitter?: number;
+  /** Ruler constraint applied after streamline (shared by chained items of one stroke). */
+  constraint?: StrokeConstraint | null;
+  /** Post-stroke curve smoothing 0..1 (default 0). */
+  smoothing?: number;
   /** Space units per CSS pixel (used for lazy-brush radius). */
   unitsPerPx?: number;
   /** Minimum spacing of stored points (space units; ≈ 0.6 screen px). */
@@ -137,6 +147,7 @@ export class StrokeRecorder {
   #first: InputSample | null = null;
   #raw: InputSample | null = null;
   #lastP = 0.5;
+  #finishedTip = false;
   /** Straight-line mode (Shift while drawing). */
   line = false;
 
@@ -146,8 +157,31 @@ export class StrokeRecorder {
     this.#stabilizer = new StrokeStabilizer({
       mode: o.stabilizerMode ?? "off",
       strength: o.stabilizerStrength ?? 0,
+      dejitter: o.dejitter ?? 0,
       unitsPerPx: o.unitsPerPx ?? 1,
     });
+  }
+
+  /** Project through the ruler constraint; re-projects earlier points when the constraint locks. */
+  #project(x: number, y: number): { x: number; y: number } {
+    const c = this.#o.constraint;
+    if (!c) return { x, y };
+    const wasLocked = c.locked;
+    const p = c.project(x, y);
+    if (!wasLocked && c.locked) {
+      const pts = this.#points;
+      for (let i = 0; i + 2 < pts.length; i += 3) {
+        const q = c.project(pts[i]!, pts[i + 1]!);
+        pts[i] = q.x;
+        pts[i + 1] = q.y;
+      }
+    }
+    return p;
+  }
+
+  /** The stabilizer keeps converging while the pointer rests (feed repeated samples). */
+  get needsTick(): boolean {
+    return this.#stabilizer.needsTick && !this.line;
   }
 
   get pointCount(): number {
@@ -199,16 +233,18 @@ export class StrokeRecorder {
       this.#first = s;
       this.#sx = filtered.x;
       this.#sy = filtered.y;
-      this.#points.push(filtered.x, filtered.y, p);
+      const q = this.#project(filtered.x, filtered.y);
+      this.#points.push(q.x, q.y, p);
       if (this.#o.recordAngles) this.#angles.push(this.#lastAng);
       return;
     }
     const t = 0.15 + (1 - this.#o.streamline) * 0.85;
     this.#sx += (filtered.x - this.#sx) * t;
     this.#sy += (filtered.y - this.#sy) * t;
+    const q = this.#project(this.#sx, this.#sy);
     const n = this.#points.length;
-    const dx = this.#sx - this.#points[n - 3]!;
-    const dy = this.#sy - this.#points[n - 2]!;
+    const dx = q.x - this.#points[n - 3]!;
+    const dy = q.y - this.#points[n - 2]!;
     if (Math.hypot(dx, dy) < this.#o.minDistance) {
       this.#points[n - 1] = Math.max(this.#points[n - 1]!, p * 0.5 + this.#points[n - 1]! * 0.5);
       return;
@@ -220,8 +256,25 @@ export class StrokeRecorder {
       if (d < -Math.PI) d += Math.PI * 2;
       this.#lastAng = this.#angles.length <= 1 ? heading : this.#lastAng + d * 0.35;
     }
-    this.#points.push(this.#sx, this.#sy, p);
+    this.#points.push(q.x, q.y, p);
     if (this.#o.recordAngles) this.#angles.push(this.#lastAng);
+  }
+
+  /** Pin the lift-off point, optionally bridging the gap from the lagging brush. */
+  finishTip(catchUp: boolean): void {
+    const raw = this.#raw;
+    if (this.#finishedTip || this.line || !raw) return;
+    this.#finishedTip = true;
+    if (!catchUp && this.#stabilizer.active) return;
+    const append = (x: number, y: number, minDistance: number) => {
+      const q = this.#project(x, y);
+      const n = this.#points.length;
+      if (n >= 3 && Math.hypot(q.x - this.#points[n - 3]!, q.y - this.#points[n - 2]!) <= minDistance) return;
+      this.#points.push(q.x, q.y, this.#lastP);
+      if (this.#o.recordAngles) this.#angles.push(this.#lastAng);
+    };
+    if (catchUp) for (const p of this.#stabilizer.catchUp().slice(0, -1)) append(p.x, p.y, this.#o.minDistance);
+    append(raw.x, raw.y, 0);
   }
 
   /** Points for live display: includes the un-streamlined tip so the ink meets the cursor. */
@@ -231,13 +284,10 @@ export class StrokeRecorder {
     const raw = this.#raw;
     const n = pts.length;
     // Don't snap straight to raw cursor when lazy-brush is active (the whole point is string lag).
-    if (
-      !this.#stabilizer.active &&
-      raw &&
-      n >= 3 &&
-      Math.hypot(raw.x - pts[n - 3]!, raw.y - pts[n - 2]!) > this.#o.minDistance * 0.5
-    ) {
-      pts.push(raw.x, raw.y, this.#lastP);
+    if (!this.#finishedTip && !this.#stabilizer.active && raw && n >= 3) {
+      const tip = this.#o.constraint?.locked ? this.#o.constraint.project(raw.x, raw.y) : raw;
+      if (Math.hypot(tip.x - pts[n - 3]!, tip.y - pts[n - 2]!) > this.#o.minDistance * 0.5)
+        pts.push(tip.x, tip.y, this.#lastP);
     }
     return pts;
   }
@@ -253,8 +303,10 @@ export class StrokeRecorder {
 
   #linePoints(): number[] {
     const a = this.#first;
-    const b = this.#raw;
-    if (!a || !b) return [];
+    const raw = this.#raw;
+    if (!a || !raw) return [];
+    const c = this.#o.constraint;
+    const b = c instanceof LineConstraint ? c.project(raw.x, raw.y) : raw;
     const p = this.#o.usesPressure ? 0.62 : 0.5;
     const len = Math.hypot(b.x - a.x, b.y - a.y);
     const steps = Math.max(1, Math.min(48, Math.ceil(len / Math.max(this.#o.minDistance * 4, this.#o.width))));
@@ -268,14 +320,20 @@ export class StrokeRecorder {
 
   /** Storage-ready points: simplified (within the per-item budget) and quantised. */
   finish(): number[] {
-    const pts = this.preview();
+    const pts = this.#smoothed(this.preview());
     if (this.line) return quantizePoints(pts);
     return quantizePoints(simplifyToLimit(pts, this.#o.tolerance, LIMITS.maxPointsPerItem));
   }
 
+  /** Post-stroke smoothing (point count unchanged, so per-point angles stay aligned). */
+  #smoothed(pts: number[]): number[] {
+    if (this.line || this.#o.constraint) return pts;
+    return smoothPolyline(pts, this.#o.smoothing ?? 0);
+  }
+
   /** Storage-ready points + aligned quantised per-point pen angles (when recorded). */
   finishWithAngles(): { points: number[]; angles?: number[] } {
-    const rawPts = this.preview();
+    const rawPts = this.#smoothed(this.preview());
     const rawAng = this.previewAngles();
     if (this.line) {
       const points = quantizePoints(rawPts);
@@ -300,4 +358,28 @@ export class StrokeRecorder {
     if (tip) next.add({ ...tip });
     return next;
   }
+}
+
+/**
+ * Laplacian smoothing of a stroke's x/y (endpoints pinned, pressure kept):
+ * `strength` 0..1 maps to 0..24 passes, each moving every point halfway to
+ * the average of its neighbours.
+ */
+export function smoothPolyline(flat: readonly number[], strength: number): number[] {
+  const out = flat.slice();
+  const n = out.length / 3;
+  const passes = Math.round(Math.min(1, Math.max(0, strength)) * 24);
+  if (n < 3 || passes <= 0) return out;
+  const tmp = new Float64Array(n * 2);
+  for (let pass = 0; pass < passes; pass++) {
+    for (let i = 1; i < n - 1; i++) {
+      tmp[i * 2] = (out[(i - 1) * 3]! + out[(i + 1) * 3]!) / 2;
+      tmp[i * 2 + 1] = (out[(i - 1) * 3 + 1]! + out[(i + 1) * 3 + 1]!) / 2;
+    }
+    for (let i = 1; i < n - 1; i++) {
+      out[i * 3] = out[i * 3]! + (tmp[i * 2]! - out[i * 3]!) * 0.5;
+      out[i * 3 + 1] = out[i * 3 + 1]! + (tmp[i * 2 + 1]! - out[i * 3 + 1]!) * 0.5;
+    }
+  }
+  return out;
 }

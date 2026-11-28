@@ -76,8 +76,8 @@
     },
     "Stabilizer": {
       "Off": "关闭",
-      "OneEuro": "1€ 自适应",
-      "Lazy": "拉绳防抖"
+      "Lazy": "拉绳防抖",
+      "Average": "时间平均"
     },
     "Symmetry": {
       "None": "关闭",
@@ -87,7 +87,10 @@
       "Radial4": "4重放射",
       "Radial6": "6重放射",
       "Radial8": "8重放射",
-      "Radial12": "12重放射"
+      "Radial12": "12重放射",
+      "Kaleido3": "3重万花筒",
+      "Kaleido4": "4重万花筒",
+      "Kaleido6": "6重万花筒"
     },
     "Highlight": {
       "Stroke": "荧光笔",
@@ -125,7 +128,7 @@
       "Color": "颜色",
       "Size": "粗细",
       "Studio": "笔刷工作室与预设",
-      "Aids": "绘画辅助（防抖、对称、吸附）",
+      "Aids": "绘画辅助（防抖、对称、标尺、吸附）",
       "Labeled": "{label}：{value}",
       "SizeValue": "粗细 {size}",
       "Lifetime": "存续时间",
@@ -161,14 +164,58 @@
       "Symmetry": "对称绘图",
       "Snap": "智能辅助",
       "QuickShape": "一笔成形（停顿）",
-      "GridSnap": "网格吸附"
+      "GridSnap": "网格吸附",
+      "Dejitter": "抖动过滤",
+      "Finish": "抬笔补齐",
+      "FinishHint": "抬笔时把笔画补到笔尖位置，而不是停在稳定线滞后的地方",
+      "Smoothing": "曲线平滑",
+      "Angle": "轴角度",
+      "ResetCenter": "重置中心与角度",
+      "SymmetryHint": "拖动中心点可移动对称中心（双击重置）；拖动旋钮可旋转对称轴（Shift 吸附 15°）。",
+      "Rulers": "标尺",
+      "RulersOn": "吸附标尺",
+      "RulersHint": "从曲线尺附近起笔会沿曲线走；其余笔画锁定到朝向消失点的方向",
+      "EditRulers": "编辑标尺",
+      "EditHint": "显示标尺控制点：拖动点，点击曲线添加点，Alt+点击删除点",
+      "AddPerspective1": "添加一点透视",
+      "AddPerspective2": "添加两点透视",
+      "AddPerspective3": "添加三点透视",
+      "AddCurve": "添加曲线尺",
+      "Curve": "曲线",
+      "Perspective": "{n}点透视",
+      "Closed": "闭合",
+      "Parallel": "平行",
+      "ParallelHint": "保持笔画与曲线的距离（平行线 / 同心线）",
+      "Parallels": "平行线",
+      "ParallelsHint": "同时提供水平 / 垂直方向",
+      "RemoveRuler": "删除标尺",
+      "AltHint": "起笔时按住 Alt 可不受标尺约束自由绘制。",
+      "AngleHandle": "拖动旋转对称轴（Shift 吸附 15°）",
+      "CenterHandle": "拖动移动对称中心（双击重置）",
+      "CurveHint": "点击添加控制点"
     },
     "Select": {
       "Scale": "拖动缩放",
       "Rotate": "拖动旋转（按住 Shift 吸附 15°）",
       "Duplicate": "复制（Ctrl+D）",
       "Recolor": "应用当前颜色",
-      "Delete": "删除"
+      "Delete": "删除",
+      "Rotate90": "旋转 90°",
+      "FlipH": "水平翻转",
+      "FlipV": "垂直翻转",
+      "Numeric": "精确缩放与角度",
+      "ScaleField": "缩放",
+      "AngleField": "角度",
+      "Apply": "应用",
+      "Pivot": "拖动移动旋转中心",
+      "Rect": "矩形框选",
+      "Lasso": "套索选择",
+      "Match": "选中",
+      "Touch": "接触到的标记",
+      "Contain": "完全框住的标记",
+      "All": "全选（Ctrl+A）",
+      "CornerHint": "拖动缩放（Shift 自由比例，Alt 从中心，Ctrl 扭曲，Ctrl+Alt+Shift 透视）",
+      "EdgeHint": "拖动拉伸（Alt 从中心，Ctrl 斜切）"
     },
     "Color": {
       "Player": "玩家颜色",
@@ -281,7 +328,9 @@
       "MediaMissing": "部分已保存的颜料文件已丢失，已跳过；可以继续绘制。丢失部分需要从备份恢复。",
       "MediaSaved": "颜料已晾干并保存。",
       "MediaSaveFailed": "颜料尚未完整保存，请保留当前页面并再次点击“立即晾干”。",
-      "MediaNoGM": "没有 GM 在线：笔画会记录在本地，但服务器自动保存需要在线的活动 GM。"
+      "MediaNoGM": "没有 GM 在线：笔画会记录在本地，但服务器自动保存需要在线的活动 GM。",
+      "TooManyRulers": "本场景的标尺数量已达上限。",
+      "TransformPartial": "部分选中的标记无法变换（无权限或超出范围）。"
     },
     "Settings": {
       "PermScreen": {
@@ -418,6 +467,9 @@
       "Toggle": {
         "Name": "切换随绘幕布图层",
         "Hint": "在随绘幕布图层与 Token 图层之间切换。"
+      },
+      "SelectAll": {
+        "Name": "全选标记（选择工具）"
       }
     },
     "Media": {

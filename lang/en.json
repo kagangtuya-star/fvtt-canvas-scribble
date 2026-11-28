@@ -76,8 +76,8 @@
     },
     "Stabilizer": {
       "Off": "Off",
-      "OneEuro": "1€ Filter",
-      "Lazy": "Lazy string"
+      "Lazy": "Lazy string",
+      "Average": "Time average"
     },
     "Symmetry": {
       "None": "Off",
@@ -87,7 +87,10 @@
       "Radial4": "4× Radial",
       "Radial6": "6× Radial",
       "Radial8": "8× Radial",
-      "Radial12": "12× Radial"
+      "Radial12": "12× Radial",
+      "Kaleido3": "3× Kaleidoscope",
+      "Kaleido4": "4× Kaleidoscope",
+      "Kaleido6": "6× Kaleidoscope"
     },
     "Highlight": {
       "Stroke": "Highlighter",
@@ -125,7 +128,7 @@
       "Color": "Colour",
       "Size": "Size",
       "Studio": "Brush Studio & Presets",
-      "Aids": "Drawing aids (stabilizer, symmetry, snap)",
+      "Aids": "Drawing aids (stabilizer, symmetry, rulers, snap)",
       "Labeled": "{label}: {value}",
       "SizeValue": "Size {size}",
       "Lifetime": "Lifetime",
@@ -161,14 +164,58 @@
       "Symmetry": "Symmetry",
       "Snap": "Smart assists",
       "QuickShape": "QuickShape (hold)",
-      "GridSnap": "Grid snap"
+      "GridSnap": "Grid snap",
+      "Dejitter": "Dejitter",
+      "Finish": "Catch up on lift",
+      "FinishHint": "When the pen lifts, finish the stroke at the pen tip instead of where the stabilized line lagged behind",
+      "Smoothing": "Curve smoothing",
+      "Angle": "Axis angle",
+      "ResetCenter": "Reset centre & angle",
+      "SymmetryHint": "Drag the centre pin to move it (double-click resets it); drag the knob to rotate the axes (Shift: 15°).",
+      "Rulers": "Rulers",
+      "RulersOn": "Snap to rulers",
+      "RulersHint": "Strokes starting near a curve ruler follow it; other strokes lock towards a vanishing point",
+      "EditRulers": "Edit rulers",
+      "EditHint": "Show ruler handles: drag points, click a curve to add a point, Alt+click a point to remove it",
+      "AddPerspective1": "Add 1-point perspective",
+      "AddPerspective2": "Add 2-point perspective",
+      "AddPerspective3": "Add 3-point perspective",
+      "AddCurve": "Add curve ruler",
+      "Curve": "Curve",
+      "Perspective": "{n}-point",
+      "Closed": "Closed",
+      "Parallel": "Parallel",
+      "ParallelHint": "Keep the stroke's distance to the curve (parallel / concentric lines)",
+      "Parallels": "Parallels",
+      "ParallelsHint": "Also offer horizontal / vertical lines",
+      "RemoveRuler": "Remove ruler",
+      "AltHint": "Hold Alt when starting a stroke to draw freely past the rulers.",
+      "AngleHandle": "Drag to rotate the symmetry axes (Shift: 15°)",
+      "CenterHandle": "Drag to move the symmetry centre (double-click resets)",
+      "CurveHint": "Click to add a control point"
     },
     "Select": {
       "Scale": "Drag to scale",
       "Rotate": "Drag to rotate (Shift: 15°)",
       "Duplicate": "Duplicate (Ctrl+D)",
       "Recolor": "Apply current colour",
-      "Delete": "Delete"
+      "Delete": "Delete",
+      "Rotate90": "Rotate 90°",
+      "FlipH": "Flip horizontally",
+      "FlipV": "Flip vertically",
+      "Numeric": "Exact scale & angle",
+      "ScaleField": "Scale",
+      "AngleField": "Angle",
+      "Apply": "Apply",
+      "Pivot": "Drag to move the rotation centre",
+      "Rect": "Marquee selection",
+      "Lasso": "Lasso selection",
+      "Match": "Selects",
+      "Touch": "items it touches",
+      "Contain": "items fully inside",
+      "All": "Select all (Ctrl+A)",
+      "CornerHint": "Drag to scale (Shift: free ratio, Alt: from centre, Ctrl: distort, Ctrl+Alt+Shift: perspective)",
+      "EdgeHint": "Drag to stretch (Alt: from centre, Ctrl: skew)"
     },
     "Color": {
       "Player": "Player colour",
@@ -281,7 +328,9 @@
       "MediaMissing": "Some saved paint files are missing and have been skipped. You can keep painting; missing paint needs a backup to restore.",
       "MediaSaved": "Paint is dry and saved.",
       "MediaSaveFailed": "Paint has not been fully saved. Keep this page open and try Dry now again.",
-      "MediaNoGM": "No GM is online: paint inputs are kept locally, but server autosave needs an active GM."
+      "MediaNoGM": "No GM is online: paint inputs are kept locally, but server autosave needs an active GM.",
+      "TooManyRulers": "Ruler limit reached for this scene.",
+      "TransformPartial": "Some selected marks could not be transformed (no permission, or out of bounds)."
     },
     "Settings": {
       "PermScreen": {
@@ -418,6 +467,9 @@
       "Toggle": {
         "Name": "Toggle CanvasScribble layer",
         "Hint": "Switch between the CanvasScribble layer and the token layer."
+      },
+      "SelectAll": {
+        "Name": "Select all marks (select tool)"
       }
     },
     "Media": {

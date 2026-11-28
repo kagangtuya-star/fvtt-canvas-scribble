@@ -145,7 +145,8 @@ export function inExtent(points: readonly number[], mode: Mode, ctx: Pick<Saniti
   for (let i = 0; i + 1 < points.length; i += 3) {
     const x = points[i]!;
     const y = points[i + 1]!;
-    if (x < lim[0] || y < lim[1] || x > lim[2] || y > lim[3]) return false;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < lim[0] || y < lim[1] || x > lim[2] || y > lim[3])
+      return false;
   }
   return true;
 }

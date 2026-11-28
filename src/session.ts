@@ -1,3 +1,7 @@
+import { buildConstraint, offsetRulers } from "./assist/constraint.ts";
+import type { StrokeConstraint } from "./assist/constraint.ts";
+import { emptyGuides, GUIDE_LIMITS, normalizeRuler } from "./assist/guides-model.ts";
+import type { Ruler, SceneGuides } from "./assist/guides-model.ts";
 import { BRUSHES, diffBrushOverride, resolveBrushParams } from "./brush/brushes.ts";
 import type { PressureMode } from "./brush/recorder.ts";
 import type { Modifiers } from "./brush/shapes.ts";
@@ -6,6 +10,8 @@ import { decodeAngles, decodePoints, quantizeAngles, quantizePoints } from "./co
 import { boundsOf, simplifyToLimit } from "./core/geometry.ts";
 import type { Bounds } from "./core/geometry.ts";
 import { History } from "./core/history.ts";
+import { affineOf, conjugate, IDENTITY } from "./core/matrix.ts";
+import type { Mat3, Pt } from "./core/matrix.ts";
 import type { Command, HistoryExecutor } from "./core/history.ts";
 import { goneAt } from "./core/lifetime.ts";
 import { allowed, mayModify, ROLES } from "./core/permissions.ts";
@@ -14,7 +20,7 @@ import { inExtent, sanitizeItem, toWire, zKindOf } from "./core/sanitize.ts";
 import { MapSpace, ScreenSpace } from "./core/space.ts";
 import type { SpaceAdapter, Viewport } from "./core/space.ts";
 import { ItemStore } from "./core/store.ts";
-import type { Entry } from "./core/store.ts";
+import type { Entry, EntryState } from "./core/store.ts";
 import { cleanText, layoutText } from "./core/text-layout.ts";
 import { SCHEMA_VERSION } from "./core/types.ts";
 import type { BrushId, EraseMask, Kind, MapLayer, Mode, ScribbleItem, WireItem } from "./core/types.ts";
@@ -29,6 +35,7 @@ import type { MediaMessage } from "./media/controller.ts";
 import { MAX_MEDIA_SIZE } from "./media/ops.ts";
 import { LiveSender, Net } from "./net/net.ts";
 import type { Inbound, SocketLike } from "./net/net.ts";
+import { MAX_UPDATE_BATCH } from "./net/protocol.ts";
 import type { ClearScope, Message } from "./net/protocol.ts";
 import type { RenderHost } from "./render/renderer.ts";
 import {
@@ -43,7 +50,18 @@ import {
 import type { Prefs, ToolId } from "./state/prefs.ts";
 import { sampleColorAt } from "./tools/eyedropper.ts";
 import { hitItem, hitPath } from "./tools/hit.ts";
-import { rotateItem, scaleItem, translateItem } from "./tools/select.ts";
+import { regionHit } from "./tools/lasso.ts";
+import { translateItem } from "./tools/select.ts";
+import {
+  changesItems,
+  flipAbout,
+  frameTransform,
+  rotateAbout,
+  scaleAbout,
+  transformFrame,
+  transformItem,
+} from "./tools/transform.ts";
+import type { FrameState, TransformHandle } from "./tools/transform.ts";
 import {
   EraserGesture,
   FreehandGesture,
@@ -75,6 +93,35 @@ type Level = "info" | "warn" | "error";
 
 /** Stale remote live items (sender vanished mid-stroke) are dropped after this (ms). */
 const LIVE_STALE_MS = 10_000;
+/** Live transform previews are re-applied at most this often (ms). */
+const TRANSFORM_FRAME_MS = 16;
+/** Socket payload kept under this many characters per `U` message. */
+const UPDATE_CHUNK_CHARS = 180_000;
+
+/** Ruler creation presets. */
+export type RulerPreset = "perspective1" | "perspective2" | "perspective3" | "curve";
+
+interface Transforming {
+  handle: TransformHandle;
+  mode: Mode;
+  originals: Entry[];
+  start: FrameState;
+  now: FrameState;
+  /** Pointer at drag start (reference space; item space for text width handles). */
+  origin: Pt;
+  moved: boolean;
+  lastApply: number;
+  /** Text width handles work in the single text item's space. */
+  target?: Target;
+}
+
+interface RegionSelect {
+  shape: "rect" | "lasso";
+  op: "replace" | "add" | "subtract";
+  mode: Mode;
+  /** Client px pairs. */
+  pts: number[];
+}
 
 /**
  * The per-client brain: owns the item store and history, turns gestures into
@@ -111,23 +158,20 @@ export class Session implements ToolHost, RenderHost {
   #level: string | undefined;
   /** Temporary items kept across a canvas redraw of the same scene. */
   #stash: { scene: string; items: ScribbleItem[] } | null = null;
-  /** Currently selected item id (Select & Transform tool). */
-  selectedId: string | null = null;
+  /** Selected item ids (Select & Transform tool); all of one mode. */
+  readonly selection = new Set<string>();
   editingTextId: string | null = null;
   onTextEditingChange: ((id: string | null) => void) | null = null;
-  #selectDrag: {
-    id: string;
-    mode: "move" | "scale" | "rotate" | "width-left" | "width-right";
-    original: ScribbleItem;
-    origin: { x: number; y: number };
-    center: { x: number; y: number };
-    startDist: number;
-    startAngle: number;
-    target: Target;
-    moved: boolean;
-  } | null = null;
-  /** Custom symmetry axis centre in map space (null = viewport centre). */
-  symmetryCenter: { x: number; y: number } | null = null;
+  #xform: Transforming | null = null;
+  #region: RegionSelect | null = null;
+  /** Free-transform frame of the selection, kept while the selection is unchanged. */
+  #frame: (FrameState & { key: string }) | null = null;
+  /** Renderer hook: items being transformed are drawn as sprites instead of cached tiles. */
+  onTransientChange: ((ids: ReadonlySet<string> | null) => void) | null = null;
+  /** Symmetry centre and rulers of the viewed scene (this user only). */
+  guides: SceneGuides = emptyGuides();
+  /** Ruler handles are editable. */
+  rulerEdit = false;
   hold: HoldMode | null = null;
   /** Hook for the UI text editor (text tool). */
   onTextRequest: ((req: TextRequest) => void) | null = null;
@@ -212,6 +256,7 @@ export class Session implements ToolHost, RenderHost {
     if (!stash) this.history.clear();
     this.scene = scene;
     this.net.scene = scene.id;
+    this.guides = settings.loadGuides(scene.id);
     this.#level = viewedLevel();
     this.rebuildSpaces();
     this.syncStored();
@@ -233,7 +278,10 @@ export class Session implements ToolHost, RenderHost {
     this.cancelGesture();
     this.media.detach();
     this.setEditingText(null);
-    this.selectedId = null;
+    this.selection.clear();
+    this.#frame = null;
+    this.guides = emptyGuides();
+    this.rulerEdit = false;
     this.#live.clear();
     for (const timer of this.#pendingTimers.values()) clearTimeout(timer);
     this.#pendingTimers.clear();
@@ -553,10 +601,17 @@ export class Session implements ToolHost, RenderHost {
       return true;
     }
     this.store.put(item, "pending");
-    if (fromLive) this.#live.end(item, true);
-    else this.net.send({ t: "e", item: toWire(item), persist: true });
-    this.#armPending(item.id, true);
-    return true;
+    const onSent = () => {
+      if (this.scene?.id === scene.id && this.store.get(item.id)?.state === "pending") this.#armPending(item.id, true);
+    };
+    const accepted = fromLive
+      ? this.#live.end(item, true, onSent)
+      : this.net.send({ t: "e", item: toWire(item), persist: true }, scene.id, onSent);
+    if (!accepted) {
+      this.store.remove(item.id);
+      this.notify("warn", "Notify.SaveRefused");
+    }
+    return accepted;
   }
 
   /** No GM / no permission: keep the stroke as a temporary map item instead of losing it. */
@@ -626,20 +681,188 @@ export class Session implements ToolHost, RenderHost {
   #target(mode: Mode, s: ClientSample): Target | null {
     if (!this.scene) return null;
     const symMode = this.prefs.symmetry;
+    const angle = this.prefs.symmetryAngle;
     if (mode === "map") {
       if (!this.#map) return null;
       const snapStep = this.prefs.gridSnap ? (this.#map.frame.gridSize / this.#map.sx) * 0.5 : 0;
       let symmetry: Target["symmetry"];
       if (symMode !== "none") {
-        const vp = this.#screen.viewport;
-        const c = this.symmetryCenter ?? this.#map.fromClient(vp.left + vp.width / 2, vp.top + vp.height / 2);
-        symmetry = { mode: symMode, cx: c.x, cy: c.y };
+        const c = this.symmetryCenterFor("map");
+        symmetry = { mode: symMode, cx: c.x, cy: c.y, angle };
       }
       return { mode, space: this.#map, snapStep, symmetry };
     }
     const anchor: [number, number] = symMode !== "none" ? [0, 0] : this.#screen.anchorFor(s.cx, s.cy);
-    const symmetry = symMode !== "none" ? { mode: symMode, cx: 0, cy: 0 } : undefined;
+    let symmetry: Target["symmetry"];
+    if (symMode !== "none") {
+      const c = this.symmetryCenterFor("screen");
+      symmetry = { mode: symMode, cx: c.x, cy: c.y, angle };
+    }
     return { mode, space: this.#screen, anchor, symmetry };
+  }
+
+  /* -------------------------------------------- */
+  /*  Drawing guides: symmetry centre, rulers     */
+  /* -------------------------------------------- */
+
+  /** Symmetry centre in the mode's reference space (map units / screen units around the centre). */
+  symmetryCenterFor(mode: Mode): Pt {
+    const stored = this.guides.symmetry[mode];
+    if (stored) return stored;
+    if (mode === "screen" || !this.#map) return { x: 0, y: 0 };
+    const vp = this.#screen.viewport;
+    return this.#map.fromClient(vp.left + vp.width / 2, vp.top + vp.height / 2);
+  }
+
+  /** Move (or reset with null) the symmetry centre of a mode. */
+  setSymmetryCenter(mode: Mode, p: Pt | null): void {
+    const symmetry = { ...this.guides.symmetry };
+    if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) symmetry[mode] = { x: p.x, y: p.y };
+    else delete symmetry[mode];
+    this.guides = { ...this.guides, symmetry };
+    this.#saveGuides();
+    this.changed();
+  }
+
+  #saveGuides(): void {
+    if (this.scene) settings.saveGuides(this.scene.id, this.guides);
+  }
+
+  /** Client point → a mode's reference space. */
+  toRefSpace(mode: Mode, cx: number, cy: number): Pt | null {
+    const space = this.space(mode);
+    if (!space) return null;
+    return mode === "screen" ? space.fromClient(cx, cy, [0, 0]) : space.fromClient(cx, cy);
+  }
+
+  /** Reference-space point → client. */
+  fromRefSpace(mode: Mode, p: Pt): Pt | null {
+    const space = this.space(mode);
+    if (!space) return null;
+    return mode === "screen" ? space.toClient(p.x, p.y, [0, 0]) : space.toClient(p.x, p.y);
+  }
+
+  /** Rulers of a mode (all, or only the snapping ones). */
+  rulersFor(mode: Mode, onlyOn = false): Ruler[] {
+    return this.guides.rulers.filter((r) => r.mode === mode && (!onlyOn || r.on));
+  }
+
+  setRulerEdit(on: boolean): void {
+    this.rulerEdit = on;
+    this.changed();
+  }
+
+  /** Add a ruler around the viewport centre of the current mode; returns its id. */
+  addRuler(preset: RulerPreset): string | null {
+    if (this.guides.rulers.length >= GUIDE_LIMITS.rulers) {
+      this.notify("warn", "Notify.TooManyRulers");
+      return null;
+    }
+    const mode: Mode = this.prefs.mode === "map" && this.#map ? "map" : "screen";
+    const vp = this.#screen.viewport;
+    const c = this.toRefSpace(mode, vp.left + vp.width / 2, vp.top + vp.height / 2);
+    const space = this.space(mode);
+    if (!c || !space) return null;
+    const u = 1 / space.cssPerUnit();
+    const w = vp.width * u;
+    const hh = vp.height * u;
+    const at = (fx: number, fy: number): Pt => ({ x: c.x + fx * w, y: c.y + fy * hh });
+    const id = randomId(12);
+    let ruler: Ruler;
+    if (preset === "curve") {
+      ruler = {
+        id,
+        kind: "curve",
+        mode,
+        on: true,
+        pts: [at(-0.3, 0.12), at(-0.1, -0.08), at(0.1, -0.08), at(0.3, 0.12)],
+        closed: false,
+        parallel: false,
+      };
+    } else {
+      const vps =
+        preset === "perspective1"
+          ? [at(0, -0.05)]
+          : preset === "perspective2"
+            ? [at(-0.38, -0.05), at(0.38, -0.05)]
+            : [at(-0.38, -0.12), at(0.38, -0.12), at(0, 0.9)];
+      ruler = { id, kind: "perspective", mode, on: true, vps, parallels: true };
+    }
+    this.guides = { ...this.guides, rulers: [...this.guides.rulers, ruler] };
+    this.#saveGuides();
+    this.changed();
+    return id;
+  }
+
+  /** Replace a ruler's fields (validated). */
+  updateRuler(id: string, patch: Partial<Ruler>, save = true): boolean {
+    const i = this.guides.rulers.findIndex((r) => r.id === id);
+    if (i < 0) return false;
+    const next = normalizeRuler({ ...this.guides.rulers[i], ...patch, id, kind: this.guides.rulers[i]!.kind });
+    if (!next) return false;
+    const rulers = this.guides.rulers.slice();
+    rulers[i] = next;
+    this.guides = { ...this.guides, rulers };
+    if (save) this.#saveGuides();
+    this.changed();
+    return true;
+  }
+
+  removeRuler(id: string): void {
+    this.guides = { ...this.guides, rulers: this.guides.rulers.filter((r) => r.id !== id) };
+    this.#saveGuides();
+    this.changed();
+  }
+
+  /** Move a ruler's point (vanishing point or curve control point). */
+  moveRulerPoint(id: string, index: number, p: Pt, save = false): void {
+    const r = this.guides.rulers.find((x) => x.id === id);
+    if (!r) return;
+    if (r.kind === "perspective") {
+      if (!r.vps[index]) return;
+      const vps = r.vps.slice();
+      vps[index] = p;
+      this.updateRuler(id, { vps }, save);
+    } else {
+      if (!r.pts[index]) return;
+      const pts = r.pts.slice();
+      pts[index] = p;
+      this.updateRuler(id, { pts }, save);
+    }
+  }
+
+  /** Insert a curve control point after `index`. */
+  insertRulerPoint(id: string, index: number, p: Pt): void {
+    const r = this.guides.rulers.find((x) => x.id === id);
+    if (r?.kind !== "curve" || r.pts.length >= GUIDE_LIMITS.curvePoints) return;
+    const pts = r.pts.slice();
+    pts.splice(index + 1, 0, p);
+    this.updateRuler(id, { pts });
+  }
+
+  /** Remove a curve control point (curves keep at least two). */
+  removeRulerPoint(id: string, index: number): void {
+    const r = this.guides.rulers.find((x) => x.id === id);
+    if (r?.kind !== "curve" || r.pts.length <= 2) return;
+    this.updateRuler(id, { pts: r.pts.filter((_, i) => i !== index) });
+  }
+
+  /** Ruler constraint for a stroke starting at `s` (Alt at pointer down draws freely). */
+  #constraintFor(target: Target, s: ClientSample, mods: Modifiers, lineOnly = false): StrokeConstraint | null {
+    if (!this.prefs.rulers || mods.alt) return null;
+    const rulers = this.rulersFor(target.mode, true);
+    if (!rulers.length) return null;
+    let dx = 0;
+    let dy = 0;
+    if (target.mode === "screen" && target.anchor && (target.anchor[0] || target.anchor[1])) {
+      // Rulers live around the viewport centre; express them in the stroke's anchor space.
+      const origin = target.space.toClient(0, 0, [0, 0]);
+      const o = target.space.fromClient(origin.x, origin.y, target.anchor);
+      dx = o.x;
+      dy = o.y;
+    }
+    const start = toSpace(target, s, lineOnly && !!target.snapStep);
+    return buildConstraint(offsetRulers(rulers, dx, dy), start, 1 / target.space.cssPerUnit(), lineOnly);
   }
 
   /** Primary button down. Returns false when nothing was started (the event is not consumed). */
@@ -655,10 +878,10 @@ export class Session implements ToolHost, RenderHost {
       return true;
     }
     if (tool === "select") {
-      return this.#selectDown(s);
+      return this.#selectDown(s, mods);
     }
-    if (this.selectedId) {
-      this.selectedId = null;
+    if (this.selection.size) {
+      this.selection.clear();
       this.changed();
     }
     if (tool === "paint") return this.#paintDown(s);
@@ -670,15 +893,26 @@ export class Session implements ToolHost, RenderHost {
     const target = this.#target(mode, s);
     if (!target) return false;
     const p = this.prefs;
+    const ruler = (lineOnly = false) => this.#constraintFor(target, s, mods, lineOnly);
     switch (tool) {
       case "draw":
-        this.#gesture = new FreehandGesture(this, target, { kind: "stroke", tool: p.brush, size: p.sizes[p.brush] }, s);
+        this.#gesture = new FreehandGesture(
+          this,
+          target,
+          { kind: "stroke", tool: p.brush, size: p.sizes[p.brush], constraint: ruler() },
+          s,
+        );
         break;
       case "highlight":
         this.#gesture =
           p.highlight === "area"
             ? new FreehandGesture(this, target, { kind: "area", tool: "area", size: p.sizes.area }, s)
-            : new FreehandGesture(this, target, { kind: "stroke", tool: "highlighter", size: p.sizes.highlighter }, s);
+            : new FreehandGesture(
+                this,
+                target,
+                { kind: "stroke", tool: "highlighter", size: p.sizes.highlighter, constraint: ruler() },
+                s,
+              );
         break;
       case "arrow":
         this.#gesture =
@@ -686,16 +920,30 @@ export class Session implements ToolHost, RenderHost {
             ? new FreehandGesture(
                 this,
                 target,
-                { kind: "stroke", tool: "fineliner", size: p.sizes.arrow, extra: { style: { head: p.head } } },
+                {
+                  kind: "stroke",
+                  tool: "fineliner",
+                  size: p.sizes.arrow,
+                  extra: { style: { head: p.head } },
+                  constraint: ruler(),
+                },
                 s,
               )
-            : new ShapeGesture(this, target, "arrow", p.sizes.arrow, s, { style: { head: p.head } });
+            : new ShapeGesture(this, target, "arrow", p.sizes.arrow, s, { style: { head: p.head } }, ruler(true));
         break;
       case "shape":
         this.#gesture =
           p.shape === "polygon"
             ? new PolygonGesture(this, target, p.sizes.shape, s)
-            : new ShapeGesture(this, target, p.shape, p.sizes.shape, s);
+            : new ShapeGesture(
+                this,
+                target,
+                p.shape,
+                p.sizes.shape,
+                s,
+                undefined,
+                p.shape === "line" ? ruler(true) : null,
+              );
         break;
       case "laser":
         this.#gesture = new LaserGesture(this, target, p.sizes.laser, s);
@@ -739,9 +987,14 @@ export class Session implements ToolHost, RenderHost {
   }
 
   pointerMove(samples: ClientSample[], mods: Modifiers): void {
-    if (this.#selectDrag) {
+    if (this.#xform) {
       const last = samples.at(-1);
-      if (last) this.#selectMove(last, mods);
+      if (last) this.#xformMove(last, mods);
+      return;
+    }
+    if (this.#region) {
+      for (const sample of samples) this.#regionAdd(sample);
+      this.changed();
       return;
     }
     if (this.#eraser) this.#eraser.gesture.move(samples);
@@ -754,8 +1007,12 @@ export class Session implements ToolHost, RenderHost {
   }
 
   pointerUp(s: ClientSample, mods: Modifiers): void {
-    if (this.#selectDrag) {
-      this.#selectUp(s, mods);
+    if (this.#xform) {
+      this.#xformUp(s, mods);
+      return;
+    }
+    if (this.#region) {
+      this.#regionUp(s);
       return;
     }
     if (this.#eraser) {
@@ -809,11 +1066,16 @@ export class Session implements ToolHost, RenderHost {
 
   cancelGesture(): boolean {
     let did = this.#cancelColorPick();
-    if (this.#selectDrag) {
-      const d = this.#selectDrag;
-      this.#selectDrag = null;
-      const state = this.store.get(d.id)?.state;
-      if (state) this.store.put(d.original, state);
+    if (this.#xform) {
+      const x = this.#xform;
+      this.#xform = null;
+      if (x.moved) for (const o of x.originals) if (this.store.has(o.item.id)) this.store.put(o.item, o.state);
+      this.onTransientChange?.(null);
+      this.changed();
+      did = true;
+    }
+    if (this.#region) {
+      this.#region = null;
       this.changed();
       did = true;
     }
@@ -834,33 +1096,204 @@ export class Session implements ToolHost, RenderHost {
   /*  Select & Transform                          */
   /* -------------------------------------------- */
 
-  selectedEntry(): Entry | null {
-    if (!this.selectedId) return null;
-    return this.store.get(this.selectedId) ?? null;
+  /** The selected id when exactly one item is selected. */
+  get selectedId(): string | null {
+    return this.selection.size === 1 ? (this.selection.values().next().value ?? null) : null;
   }
 
-  /** Start a scale or rotate drag from a selection handle (called by SelectionOverlay). */
-  startTransformHandle(mode: "scale" | "rotate" | "width-left" | "width-right", cx: number, cy: number): boolean {
-    const entry = this.selectedEntry();
-    if (!entry || !this.#modifiable(entry)) return false;
-    if (mode === "rotate" && entry.item.kind === "text") return false;
-    if (mode.startsWith("width-") && entry.item.kind !== "text") return false;
-    const space = this.space(entry.item.mode);
-    if (!space) return false;
-    const target: Target = { mode: entry.item.mode, space, anchor: entry.item.anchor };
-    const p = space.fromClient(cx, cy, entry.item.anchor);
-    const b = entry.bounds;
-    const center = { x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2 };
-    this.#selectDrag = {
-      id: entry.item.id,
-      mode,
-      original: entry.item,
-      origin: p,
-      center,
-      startDist: Math.max(1, Math.hypot(p.x - center.x, p.y - center.y)),
-      startAngle: Math.atan2(p.y - center.y, p.x - center.x),
-      target,
+  set selectedId(id: string | null) {
+    this.selection.clear();
+    if (id) this.selection.add(id);
+  }
+
+  /** Selected entries that still exist and are shown (vanished ids are dropped). */
+  selectedEntries(): Entry[] {
+    const out: Entry[] = [];
+    for (const id of [...this.selection]) {
+      const entry = this.store.get(id);
+      if (!entry || entry.item.kind === "laser" || !this.shows(entry.item)) {
+        this.selection.delete(id);
+        continue;
+      }
+      out.push(entry);
+    }
+    return out;
+  }
+
+  selectedEntry(): Entry | null {
+    const list = this.selectedEntries();
+    return list.length === 1 ? list[0]! : null;
+  }
+
+  /** Mode of the selected items (a selection never mixes modes). */
+  selectionMode(): Mode | null {
+    return this.selectedEntries()[0]?.item.mode ?? null;
+  }
+
+  clearSelection(): boolean {
+    if (!this.selection.size) return false;
+    this.selection.clear();
+    this.#frame = null;
+    this.changed();
+    return true;
+  }
+
+  /** Escape: cancel the current gesture, else drop the selection. */
+  dismiss(): boolean {
+    return this.cancelGesture() || this.clearSelection();
+  }
+
+  /** Select every item of the current mode the user may modify. */
+  selectAll(): number {
+    const mode = this.effective().mode;
+    this.selection.clear();
+    for (const entry of this.store.values()) {
+      if (entry.item.mode === mode && entry.item.kind !== "laser" && this.#modifiable(entry))
+        this.selection.add(entry.item.id);
+    }
+    this.#frame = null;
+    this.changed();
+    return this.selection.size;
+  }
+
+  /** Item space → the mode's reference space (identity on the map). */
+  #toRef(item: ScribbleItem): Mat3 {
+    if (item.mode === "map") return IDENTITY;
+    const a = item.anchor ?? [0, 0];
+    const space = this.space("screen");
+    if (!space || (!a[0] && !a[1])) return IDENTITY;
+    return affineOf((x, y) => {
+      const c = space.toClient(x, y, a);
+      return space.fromClient(c.x, c.y, [0, 0]);
+    });
+  }
+
+  #selectionKey(entries: readonly Entry[]): string {
+    return entries
+      .map((e) => `${e.item.id}:${e.item.revision}`)
+      .sort()
+      .join(",");
+  }
+
+  #textFrame(item: ScribbleItem): FrameState {
+    const l = layoutText(item);
+    const m = this.#toRef(item);
+    const x = item.points[0]! + m[2];
+    const y = item.points[1]! + m[5];
+    return {
+      quad: [
+        { x, y },
+        { x: x + l.width, y },
+        { x: x + l.width, y: y + l.height },
+        { x, y: y + l.height },
+      ],
+      pivot: { x: x + l.width / 2, y: y + l.height / 2 },
+    };
+  }
+
+  /**
+   * Free-transform frame of the selection in reference space (nw, ne, se, sw
+   * and the pivot). A rotated or distorted frame is kept while the selection
+   * stays as this client left it; otherwise it is the bounding box again.
+   */
+  selectionFrame(): (FrameState & { mode: Mode; entries: Entry[] }) | null {
+    const x = this.#xform;
+    if (x) return { mode: x.mode, entries: x.originals, ...x.now };
+    const entries = this.selectedEntries();
+    if (!entries.length) return null;
+    const mode = entries[0]!.item.mode;
+    const key = this.#selectionKey(entries);
+    if (this.#frame?.key !== key) {
+      let b: Bounds = [Infinity, Infinity, -Infinity, -Infinity];
+      for (const e of entries) {
+        let box = e.bounds;
+        if (e.item.kind === "text") {
+          const l = layoutText(e.item);
+          const [tx, ty] = [e.item.points[0]!, e.item.points[1]!];
+          box = [tx, ty, tx + l.width, ty + l.height];
+        }
+        const m = this.#toRef(e.item);
+        for (const [cx, cy] of [
+          [box[0], box[1]],
+          [box[2], box[3]],
+        ] as const) {
+          const px = m[0] * cx + m[1] * cy + m[2];
+          const py = m[3] * cx + m[4] * cy + m[5];
+          b = [Math.min(b[0], px), Math.min(b[1], py), Math.max(b[2], px), Math.max(b[3], py)];
+        }
+      }
+      const pad = 1e-3;
+      if (b[2] - b[0] < pad) b = [b[0] - pad, b[1], b[2] + pad, b[3]];
+      if (b[3] - b[1] < pad) b = [b[0], b[1] - pad, b[2], b[3] + pad];
+      this.#frame = {
+        key,
+        quad: [
+          { x: b[0], y: b[1] },
+          { x: b[2], y: b[1] },
+          { x: b[2], y: b[3] },
+          { x: b[0], y: b[3] },
+        ],
+        pivot: { x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2 },
+      };
+    }
+    return { mode, entries, quad: this.#frame.quad, pivot: this.#frame.pivot };
+  }
+
+  /** The region being dragged (client px pairs), for the overlay. */
+  selectionRegion(): { shape: "rect" | "lasso"; pts: readonly number[] } | null {
+    return this.#region ? { shape: this.#region.shape, pts: this.#region.pts } : null;
+  }
+
+  /** Is a transform drag in progress? */
+  get transforming(): boolean {
+    return !!this.#xform;
+  }
+
+  /** Start a transform drag from a frame handle (called by the guides overlay). */
+  startTransformHandle(
+    handle: TransformHandle,
+    cx: number,
+    cy: number,
+    mods: Modifiers = { shift: false, alt: false },
+  ): boolean {
+    void mods;
+    const entries = this.selectedEntries();
+    if (!entries.length) return false;
+    if (handle !== "pivot" && !entries.every((e) => this.#modifiable(e))) return false;
+    if (handle === "rotate" && entries.every((e) => e.item.kind === "text")) return false;
+    const frame = this.selectionFrame();
+    if (!frame) return false;
+    if (handle === "width-left" || handle === "width-right") {
+      const entry = entries.length === 1 ? entries[0]! : null;
+      if (entry?.item.kind !== "text") return false;
+      const space = this.space(entry.item.mode);
+      if (!space) return false;
+      const target: Target = { mode: entry.item.mode, space, anchor: entry.item.anchor };
+      this.#xform = {
+        handle,
+        mode: frame.mode,
+        originals: entries,
+        start: frame,
+        now: frame,
+        origin: space.fromClient(cx, cy, entry.item.anchor),
+        moved: false,
+        lastApply: 0,
+        target,
+      };
+      return true;
+    }
+    const origin = this.toRefSpace(frame.mode, cx, cy);
+    if (!origin) return false;
+    const state: FrameState = { quad: frame.quad, pivot: frame.pivot };
+    this.#xform = {
+      handle,
+      mode: frame.mode,
+      originals: entries,
+      start: state,
+      now: state,
+      origin,
       moved: false,
+      lastApply: 0,
     };
     return true;
   }
@@ -895,122 +1328,312 @@ export class Session implements ToolHost, RenderHost {
     return hit;
   }
 
-  #selectDown(s: ClientSample): boolean {
+  /**
+   * Select tool pointer down: on an item, select it (Shift toggles, Ctrl
+   * removes) and start moving the selection; on empty space, start a
+   * marquee or lasso region.
+   */
+  #selectDown(s: ClientSample, mods: Modifiers): boolean {
     const hit = this.#selectHit(s);
-    this.selectedId = hit ? hit.item.id : null;
-    this.changed();
-    if (!hit) return false;
-    const space = this.space(hit.item.mode)!;
-    const target: Target = { mode: hit.item.mode, space, anchor: hit.item.anchor };
-    const p = toSpace(target, s);
-    const b = hit.bounds;
-    const center = { x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2 };
-    this.#selectDrag = {
-      id: hit.item.id,
-      mode: "move",
-      original: hit.item,
-      origin: p,
-      center,
-      startDist: 1,
-      startAngle: 0,
-      target,
-      moved: false,
+    const add = mods.shift;
+    const sub = !!mods.ctrl;
+    if (hit) {
+      const id = hit.item.id;
+      const mode = this.selectionMode();
+      if (mode && mode !== hit.item.mode) this.selection.clear();
+      if (sub || (add && this.selection.has(id))) {
+        this.selection.delete(id);
+        this.changed();
+        return true;
+      }
+      if (add) this.selection.add(id);
+      else if (!this.selection.has(id)) this.selectedId = id;
+      this.changed();
+      this.startTransformHandle("move", s.cx, s.cy, mods);
+      return true;
+    }
+    const mode = this.effective().mode;
+    if (!add && !sub) this.clearSelection();
+    this.#region = {
+      shape: this.prefs.selectShape,
+      op: add ? "add" : sub ? "subtract" : "replace",
+      mode,
+      pts: [s.cx, s.cy],
     };
+    this.changed();
     return true;
   }
 
-  #selectMove(s: ClientSample, mods: Modifiers): void {
-    const d = this.#selectDrag;
-    if (!d) return;
-    const p = toSpace(d.target, s);
-    let next: ScribbleItem;
-    if (d.mode === "move") {
-      const dx = p.x - d.origin.x;
-      const dy = p.y - d.origin.y;
-      if (!d.moved && Math.hypot(dx, dy) < 1.5 / d.target.space.cssPerUnit()) return;
-      d.moved = true;
-      next = translateItem(d.original, dx, dy);
-    } else if (d.mode === "scale") {
-      d.moved = true;
-      const dist = Math.max(1, Math.hypot(p.x - d.center.x, p.y - d.center.y));
-      const f = Math.max(0.15, Math.min(8, dist / d.startDist));
-      next = scaleItem(d.original, d.center.x, d.center.y, f, f);
-    } else if (d.mode === "width-left" || d.mode === "width-right") {
-      const dx = p.x - d.origin.x;
-      if (!d.moved && Math.abs(dx) < 1.5 / d.target.space.cssPerUnit()) return;
-      d.moved = true;
-      const oldWidth = layoutText(d.original).width;
-      const max = d.original.mode === "screen" ? 4000 : 100_000;
-      const width = Math.max(1, Math.min(max, oldWidth + (d.mode === "width-left" ? -dx : dx)));
-      next = d.mode === "width-left" ? translateItem(d.original, oldWidth - width, 0) : { ...d.original };
-      next.textWidth = width;
-      next.revision = d.original.revision + 1;
-    } else {
-      d.moved = true;
-      let rad = Math.atan2(p.y - d.center.y, p.x - d.center.x) - d.startAngle;
-      if (mods.shift) rad = Math.round(rad / (Math.PI / 12)) * (Math.PI / 12);
-      next = rotateItem(d.original, d.center.x, d.center.y, rad);
+  #regionAdd(s: ClientSample): void {
+    const r = this.#region;
+    if (!r) return;
+    if (r.shape === "rect") {
+      r.pts = [r.pts[0]!, r.pts[1]!, s.cx, s.cy];
+      return;
     }
-    const state = this.store.get(d.id)?.state;
-    if (state) this.store.put(next, state);
-    this.changed();
+    const n = r.pts.length;
+    if (n >= 4000) return;
+    if (Math.hypot(s.cx - r.pts[n - 2]!, s.cy - r.pts[n - 1]!) >= 3) r.pts.push(s.cx, s.cy);
   }
 
-  #selectUp(s: ClientSample, mods: Modifiers): void {
-    const d = this.#selectDrag;
-    if (!d) return;
-    this.#selectMove(s, mods);
-    this.#selectDrag = null;
-    if (!d.moved) return;
-    const entry = this.store.get(d.id);
-    if (!entry) return;
-    const cur = entry.item;
-    if (!this.#modifiable(entry) || !this.#replaceItems([cur])) {
-      this.store.put(d.original, entry.state);
+  #regionUp(s: ClientSample): void {
+    this.#regionAdd(s);
+    const r = this.#region!;
+    this.#region = null;
+    const pts = r.pts;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i + 1 < pts.length; i += 2) {
+      minX = Math.min(minX, pts[i]!);
+      maxX = Math.max(maxX, pts[i]!);
+      minY = Math.min(minY, pts[i + 1]!);
+      maxY = Math.max(maxY, pts[i + 1]!);
+    }
+    if (maxX - minX < 3 && maxY - minY < 3) {
+      // A click on empty space.
       this.changed();
       return;
     }
-    this.history.record({ type: "update", before: [d.original], after: [cur] });
+    const client = r.shape === "rect" ? [minX, minY, maxX, minY, maxX, maxY, minX, maxY] : pts.length >= 6 ? pts : [];
+    if (!client.length) {
+      this.changed();
+      return;
+    }
+    const match = this.prefs.selectMatch;
+    const regions = new Map<string, { poly: number[]; bounds: Bounds }>();
+    const regionFor = (item: ScribbleItem) => {
+      const key = item.mode === "screen" ? String(item.anchor ?? [0, 0]) : "map";
+      let reg = regions.get(key);
+      if (!reg) {
+        const space = this.space(item.mode)!;
+        const poly: number[] = [];
+        for (let i = 0; i + 1 < client.length; i += 2) {
+          const p = space.fromClient(client[i]!, client[i + 1]!, item.anchor);
+          poly.push(p.x, p.y, 0.5);
+        }
+        reg = { poly, bounds: boundsOf(poly) };
+        regions.set(key, reg);
+      }
+      return reg;
+    };
+    const mode = this.selectionMode();
+    if (r.op === "add" && mode && mode !== r.mode) this.selection.clear();
+    for (const entry of this.store.values()) {
+      const item = entry.item;
+      if (item.mode !== r.mode || item.kind === "laser" || !this.space(item.mode) || !this.#modifiable(entry)) continue;
+      const reg = regionFor(item);
+      if (!regionHit(entry, reg.poly, match, reg.bounds)) continue;
+      if (r.op === "subtract") this.selection.delete(item.id);
+      else this.selection.add(item.id);
+    }
+    this.#frame = null;
     this.changed();
   }
 
+  #xformMove(s: ClientSample, mods: Modifiers, final = false): void {
+    const x = this.#xform;
+    if (!x) return;
+    if (x.handle === "width-left" || x.handle === "width-right") {
+      const target = x.target!;
+      const original = x.originals[0]!.item;
+      const p = target.space.fromClient(s.cx, s.cy, target.anchor);
+      const dx = p.x - x.origin.x;
+      if (!x.moved && Math.abs(dx) < 1.5 / target.space.cssPerUnit()) return;
+      const oldWidth = layoutText(original).width;
+      const max = original.mode === "screen" ? 4000 : 100_000;
+      const width = Math.max(1, Math.min(max, oldWidth + (x.handle === "width-left" ? -dx : dx)));
+      const unchanged = dx === 0 || width === oldWidth;
+      if (unchanged && !x.moved) return;
+      if (!x.moved) {
+        x.moved = true;
+        this.onTransientChange?.(new Set([original.id]));
+      }
+      const next = unchanged
+        ? original
+        : {
+            ...(x.handle === "width-left" ? translateItem(original, oldWidth - width, 0) : original),
+            textWidth: width,
+            revision: original.revision + 1,
+          };
+      x.now = unchanged ? x.start : this.#textFrame(next);
+      if (this.store.has(original.id)) this.store.put(next, x.originals[0]!.state);
+      this.changed();
+      return;
+    }
+    const p = this.toRefSpace(x.mode, s.cx, s.cy);
+    if (!p) return;
+    if (x.handle === "pivot") {
+      x.now = { quad: x.start.quad, pivot: p };
+      x.moved = true;
+      this.changed();
+      return;
+    }
+    const space = this.space(x.mode)!;
+    if (!x.moved && Math.hypot(p.x - x.origin.x, p.y - x.origin.y) < 1.5 / space.cssPerUnit()) return;
+    const result = frameTransform({ ...x.start, handle: x.handle, origin: x.origin }, p, mods);
+    if (!result) return;
+    const changed = changesItems(result.m);
+    if (!changed && !x.moved) return;
+    if (!x.moved) {
+      x.moved = true;
+      this.onTransientChange?.(new Set(x.originals.map((o) => o.item.id)));
+    }
+    x.now = changed ? { quad: result.quad, pivot: result.pivot } : x.start;
+    const now = performance.now();
+    if (!final && now - x.lastApply < TRANSFORM_FRAME_MS) return;
+    x.lastApply = now;
+    this.#previewTransform(x.originals, result.m, changed);
+    this.changed();
+  }
+
+  /** Show the selection transformed by `m` (reference space) without sending anything. */
+  #previewTransform(originals: readonly Entry[], m: Mat3, changed = true): void {
+    for (const o of originals) {
+      if (!this.store.has(o.item.id)) continue;
+      const item = changed ? transformItem(o.item, conjugate(m, this.#toRef(o.item))) : o.item;
+      this.store.put(item, o.state);
+    }
+  }
+
+  #xformUp(s: ClientSample, mods: Modifiers): void {
+    const x = this.#xform;
+    if (!x) return;
+    this.#xformMove(s, mods, true);
+    this.#xform = null;
+    if (!x.moved) {
+      this.changed();
+      return;
+    }
+    if (x.handle === "pivot") {
+      if (this.#frame) this.#frame = { ...this.#frame, pivot: x.now.pivot };
+      this.changed();
+      return;
+    }
+    this.#commitTransform(x.originals, x.now);
+    this.onTransientChange?.(null);
+  }
+
+  /**
+   * Send the previewed (already stored locally) transform of `originals`:
+   * items that may no longer be modified or would leave the scene's extent
+   * are restored; the rest become one undoable update.
+   */
+  #commitTransform(originals: readonly Entry[], frame: FrameState): void {
+    const scene = this.scene;
+    if (!scene) return;
+    const before: ScribbleItem[] = [];
+    const after: ScribbleItem[] = [];
+    let rejected = false;
+    for (const o of originals) {
+      const cur = this.store.get(o.item.id);
+      if (!cur || cur.item === o.item) continue;
+      const candidate = cur.item;
+      const ctx = this.#ctx(scene, o.item.author, o.item.expiresAt === null);
+      const item =
+        this.#modifiable(cur) &&
+        inExtent(candidate.points, candidate.mode, ctx) &&
+        (candidate.erase ?? []).every((mask) => inExtent(mask.points, candidate.mode, ctx))
+          ? sanitizeItem(toWire(candidate), { ...ctx, allowExpired: true })
+          : null;
+      if (!item) {
+        this.store.put(o.item, cur.state);
+        rejected = true;
+        continue;
+      }
+      before.push(o.item);
+      after.push(item);
+    }
+    const refused = after.length ? this.#replaceItemsDetailed(after) : new Set<string>();
+    if (refused.size) {
+      for (const o of originals)
+        if (refused.has(o.item.id)) this.store.put(o.item, this.store.get(o.item.id)?.state ?? o.state);
+    }
+    const kept = after.filter((i) => !refused.has(i.id));
+    if (kept.length)
+      this.history.record({ type: "update", before: before.filter((i) => !refused.has(i.id)), after: kept });
+    if (rejected || refused.size) this.notify("warn", "Notify.TransformPartial");
+    const entries = this.selectedEntries();
+    this.#frame =
+      entries.length && !rejected && !refused.size
+        ? { key: this.#selectionKey(entries), quad: frame.quad, pivot: frame.pivot }
+        : null;
+    this.changed();
+  }
+
+  /** Apply a reference-space transform to the whole selection at once (flip, rotate, scale buttons). */
+  transformSelection(m: Mat3): boolean {
+    if (this.#xform || !changesItems(m)) return false;
+    const frame = this.selectionFrame();
+    if (!frame || !frame.entries.every((e) => this.#modifiable(e))) return false;
+    this.#previewTransform(frame.entries, m);
+    this.#commitTransform(frame.entries, transformFrame(frame, m));
+    return true;
+  }
+
+  flipSelection(axis: "h" | "v"): boolean {
+    const f = this.selectionFrame();
+    return !!f && this.transformSelection(flipAbout(axis, f.quad, f.pivot));
+  }
+
+  rotateSelection(deg: number): boolean {
+    const f = this.selectionFrame();
+    return !!f && Number.isFinite(deg) && deg !== 0 && this.transformSelection(rotateAbout(deg, f.pivot));
+  }
+
+  scaleSelection(factor: number): boolean {
+    const f = this.selectionFrame();
+    if (!f || !Number.isFinite(factor) || factor <= 0 || factor === 1) return false;
+    return this.transformSelection(scaleAbout(Math.max(0.05, Math.min(20, factor)), f.pivot));
+  }
+
   deleteSelected(): boolean {
-    const entry = this.selectedEntry();
-    if (!entry) return false;
-    this.selectedId = null;
-    this.#removeItems([entry.item]);
-    this.history.record({ type: "delete", items: [entry.item] });
+    const entries = this.selectedEntries().filter((e) => this.#modifiable(e));
+    if (!entries.length) return false;
+    const items = entries.map((e) => e.item);
+    this.selection.clear();
+    this.#frame = null;
+    this.#removeItems(items);
+    this.history.record({ type: "delete", items });
     this.changed();
     return true;
   }
 
   duplicateSelected(): boolean {
-    const entry = this.selectedEntry();
-    if (!entry) return false;
-    const space = this.space(entry.item.mode);
-    const offset = space ? 18 / space.cssPerUnit() : 20;
-    const shifted = translateItem(entry.item, offset, offset);
-    const copy: ScribbleItem = {
-      ...shifted,
-      id: randomId(16),
-      author: game.user.id,
-      createdAt: this.now(),
-      revision: 0,
-    };
-    this.commit(copy);
-    this.selectedId = copy.id;
+    const entries = this.selectedEntries().filter((e) => this.#modifiable(e));
+    if (!entries.length) return false;
+    const now = this.now();
+    const copies = entries.map((entry) => {
+      const space = this.space(entry.item.mode);
+      const offset = space ? 18 / space.cssPerUnit() : 20;
+      return {
+        ...translateItem(entry.item, offset, offset),
+        id: randomId(16),
+        author: game.user.id,
+        createdAt: now,
+        revision: 0,
+      };
+    });
+    this.commitBatch(copies);
+    this.selection.clear();
+    for (const copy of copies) if (this.store.has(copy.id)) this.selection.add(copy.id);
+    this.#frame = null;
     this.changed();
     return true;
   }
 
   recolorSelected(color: string): boolean {
-    const entry = this.selectedEntry();
-    if (!entry || entry.item.color === color) return false;
-    const after: ScribbleItem = { ...entry.item, color, revision: entry.item.revision + 1 };
-    this.#replaceItems([after]);
-    this.history.record({ type: "update", before: [entry.item], after: [after] });
+    const entries = this.selectedEntries().filter((e) => e.item.color !== color && this.#modifiable(e));
+    if (!entries.length) return false;
+    const before = entries.map((e) => e.item);
+    const after = before.map((item) => ({ ...item, color, revision: item.revision + 1 }));
+    const refused = this.#replaceItemsDetailed(after);
+    const kept = after.filter((i) => !refused.has(i.id));
+    if (kept.length)
+      this.history.record({ type: "update", before: before.filter((i) => !refused.has(i.id)), after: kept });
     this.changed();
-    return true;
+    return kept.length > 0;
   }
 
   /** Commit a text item from the text editor. */
@@ -1274,30 +1897,63 @@ export class Session implements ToolHost, RenderHost {
     if (stored.length && this.isRelay) this.writer.delete(this.scene, stored);
   }
 
-  /** Replace items everywhere (erase masks, undo/redo of an update). */
+  /** Replace items everywhere (erase masks, transforms, undo/redo of an update). */
   #replaceItems(items: ScribbleItem[]): boolean {
-    if (!this.scene) return false;
-    let success = true;
+    return this.scene ? this.#replaceItemsDetailed(items).size === 0 : false;
+  }
+
+  /** {@link #replaceItems}, returning the ids the GM's writer refused (budget). */
+  #replaceItemsDetailed(items: ScribbleItem[]): Set<string> {
+    const refused = new Set<string>();
+    if (!this.scene) {
+      for (const item of items) refused.add(item.id);
+      return refused;
+    }
+    const outgoing: WireItem[] = [];
     for (const item of items) {
       const entry = this.store.get(item.id);
       if (item.expiresAt === null) {
         if (this.isRelay) {
           const refusal = this.writer.write(this.scene, item);
           if (refusal) {
-            success = false;
+            refused.add(item.id);
             this.notify("warn", "Notify.Budget");
             if (entry) this.store.put(entry.item, entry.state);
             continue;
           }
-        } else this.net.send({ t: "u", item: toWire(item) });
+        } else outgoing.push(toWire(item));
         // Optimistic local display until the Scene update confirms it.
         this.store.put(item, "stored");
       } else {
         this.store.put(item, entry?.state === "live" ? "live" : "temp");
-        this.net.send({ t: "u", item: toWire(item) });
+        outgoing.push(toWire(item));
       }
     }
-    return success;
+    this.#sendUpdates(outgoing);
+    return refused;
+  }
+
+  /** One `u` per item for small changes; `U` batches (bounded in count and size) for selections. */
+  #sendUpdates(wires: WireItem[]): void {
+    if (wires.length === 1) {
+      this.net.send({ t: "u", item: wires[0]! });
+      return;
+    }
+    let batch: WireItem[] = [];
+    let chars = 0;
+    const flush = () => {
+      if (batch.length === 1) this.net.send({ t: "u", item: batch[0]! });
+      else if (batch.length) this.net.send({ t: "U", items: batch });
+      batch = [];
+      chars = 0;
+    };
+    for (const wire of wires) {
+      const size = JSON.stringify(wire).length;
+      if (batch.length && (batch.length >= MAX_UPDATE_BATCH || chars + size > UPDATE_CHUNK_CHARS)) flush();
+      batch.push(wire);
+      chars += size;
+    }
+    flush();
   }
 
   /** Re-create items with their original ids (undo of delete, redo of create). */
@@ -1545,34 +2201,12 @@ export class Session implements ToolHost, RenderHost {
         if (storedIds.length) this.writer.delete(scene, storedIds);
         return;
       }
-      case "u": {
-        const id = (msg.item as { id?: unknown }).id;
-        if (typeof id !== "string") return;
-        const entry = here ? this.store.get(id) : undefined;
-        const storedRaw = relay ? rawItems(scene)[id] : undefined;
-        const current = entry?.item ?? (storedRaw ? readStored(scene, id, storedRaw, this.now()) : null);
-        if (!current || !mayModify(sender.id, sender.role, current.author, th)) return;
-        // The author never changes through an update.
-        const item = sanitizeItem(msg.item, {
-          ...this.#ctx(scene, current.author, current.expiresAt === null),
-          allowExpired: current.expiresAt === null,
-        });
-        if (
-          !item ||
-          item.mode !== current.mode ||
-          item.kind !== current.kind ||
-          (item.expiresAt === null) !== (current.expiresAt === null)
-        )
-          return;
-        if (item.expiresAt === null) {
-          if (relay && storedRaw) {
-            const refusal = this.writer.write(scene, item);
-            if (refusal) this.net.send({ t: "n", to: sender.id, id: item.id, reason: refusal }, scene.id);
-          }
-          if (here && entry) this.store.put(item, entry.state);
-        } else if (here && entry) this.store.put(item, entry.state === "live" ? "live" : "temp");
+      case "u":
+        this.#receiveUpdate(msg.item, sender, scene, here, relay);
         return;
-      }
+      case "U":
+        for (const wire of msg.items) this.#receiveUpdate(wire, sender, scene, here, relay);
+        return;
       case "c": {
         const scope = msg.scope;
         const own = scope === "mine" || scope === "minePermanent";
@@ -1634,6 +2268,33 @@ export class Session implements ToolHost, RenderHost {
         return;
       }
     }
+  }
+
+  /** An item replaced by its author or a manager (`u`, or one entry of `U`). */
+  #receiveUpdate(wire: WireItem, sender: FoundryUser, scene: FoundryScene, here: boolean, relay: boolean): void {
+    if (!wire || typeof wire !== "object") return;
+    const id = (wire as { id?: unknown }).id;
+    if (typeof id !== "string") return;
+    const th = settings.thresholds();
+    const entry = here ? this.store.get(id) : undefined;
+    const storedRaw = relay ? rawItems(scene)[id] : undefined;
+    const current = entry?.item ?? (storedRaw ? readStored(scene, id, storedRaw, this.now()) : null);
+    if (!current || !mayModify(sender.id, sender.role, current.author, th)) return;
+    if (current.expiresAt !== null && this.now() >= goneAt(current)) return;
+    // An update keeps the current author's identity and lifetime even if it was queued.
+    if ((wire.expiresAt === null) !== (current.expiresAt === null)) return;
+    const item = sanitizeItem(
+      { ...wire, createdAt: current.createdAt, expiresAt: current.expiresAt, fadeDuration: current.fadeDuration },
+      { ...this.#ctx(scene, current.author, current.expiresAt === null), allowExpired: true },
+    );
+    if (!item || item.mode !== current.mode || item.kind !== current.kind) return;
+    if (item.expiresAt === null) {
+      if (relay && storedRaw) {
+        const refusal = this.writer.write(scene, item);
+        if (refusal) this.net.send({ t: "n", to: sender.id, id: item.id, reason: refusal }, scene.id);
+      }
+      if (here && entry) this.store.put(item, entry.state);
+    } else if (here && entry) this.store.put(item, entry.state === "live" ? "live" : "temp");
   }
 
   /** Send a raw message (API/debug). */
