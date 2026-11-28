@@ -21,11 +21,23 @@ export interface Inbound {
   sender: FoundryUser;
 }
 
-const rateLimits = () => ({
-  messages: new RateLimiter(LIMITS.rate.messages.rate, LIMITS.rate.messages.burst),
-  points: new RateLimiter(LIMITS.rate.points.rate, LIMITS.rate.points.burst),
-  items: new RateLimiter(LIMITS.rate.items.rate, LIMITS.rate.items.burst),
+const rateLimits = (pace = 1) => ({
+  messages: new RateLimiter(LIMITS.rate.messages.rate * pace, LIMITS.rate.messages.burst),
+  points: new RateLimiter(LIMITS.rate.points.rate * pace, LIMITS.rate.points.burst),
+  items: new RateLimiter(LIMITS.rate.items.rate * pace, LIMITS.rate.items.burst),
+  finalPoints: new RateLimiter(LIMITS.rate.points.rate * pace, LIMITS.rate.points.burst * MAX_LIVE_BATCH),
 });
+
+const isPreview = (t: Message["t"]) => t === "s" || t === "p" || t === "b" || t === "ms" || t === "mp";
+const pointLimiter = (limits: ReturnType<typeof rateLimits>, t: Message["t"]) =>
+  t === "e" || t === "me" || t === "U" ? limits.finalPoints : limits.points;
+
+interface QueuedMessage {
+  msg: Message;
+  size: number;
+  cost: ReturnType<typeof messageCost>;
+  onSent?: () => void;
+}
 
 /**
  * Socket wrapper: outbound stamping, inbound envelope validation, sender
@@ -39,8 +51,10 @@ export class Net {
   readonly #limits = rateLimits();
   // Preview traffic must never spend the budget needed to commit the final items.
   readonly #previewLimits = rateLimits();
-  // On pen-up all companions arrive together, even for a long, detailed stroke.
-  readonly #finalPoints = new RateLimiter(LIMITS.rate.points.rate, LIMITS.rate.points.burst * MAX_LIVE_BATCH);
+  // Leave room for timing differences between the sender and receivers.
+  readonly #outboundLimits = rateLimits(0.95);
+  readonly #outbound: QueuedMessage[] = [];
+  #outboundTimer: ReturnType<typeof setTimeout> | null = null;
   readonly #warned = new Map<string, number>();
   readonly #listener: (payload: unknown, senderId?: unknown) => void;
   #handler: ((input: Inbound) => void) | null = null;
@@ -60,22 +74,70 @@ export class Net {
     this.#handler = fn;
   }
 
-  send(msg: Outbound, scene = this.scene): void {
-    if (!scene) return;
+  send(msg: Outbound, scene = this.scene, onSent?: () => void): boolean {
+    if (!scene) return false;
     const full = { ...msg, v: PROTOCOL_VERSION, scene } as Message;
     let size = 0;
     try {
       size = JSON.stringify(full).length;
     } catch {
-      return;
+      return false;
     }
     if (size > MAX_MESSAGE_CHARS) {
       this.log?.("outbound message too large, not sent", { t: full.t, size });
-      return;
+      return false;
     }
+    if (isPreview(full.t)) {
+      this.#emit(full, size);
+      onSent?.();
+      return true;
+    }
+    const next = { msg: full, size, cost: messageCost(full), onSent };
+    if (!Number.isFinite(this.#wait(next, performance.now()))) {
+      this.log?.("outbound message exceeds receiver burst budget, not sent", { t: full.t, size });
+      return false;
+    }
+    this.#outbound.push(next);
+    if (this.#outboundTimer === null) this.#flushOutbound();
+    return true;
+  }
+
+  #wait(next: QueuedMessage, now: number): number {
+    const limits = this.#outboundLimits;
+    const [m, p, i] = next.cost;
+    const key = this.#selfId;
+    return Math.max(
+      limits.messages.wait(key, m, now),
+      pointLimiter(limits, next.msg.t).wait(key, p, now),
+      limits.items.wait(key, i, now),
+    );
+  }
+
+  #flushOutbound(): void {
+    this.#outboundTimer = null;
+    while (this.#outbound.length) {
+      const next = this.#outbound[0]!;
+      const now = performance.now();
+      const wait = this.#wait(next, now);
+      if (wait > 0) {
+        this.#outboundTimer = setTimeout(() => this.#flushOutbound(), Math.ceil(wait) + 1);
+        return;
+      }
+      const [m, p, i] = next.cost;
+      const limits = this.#outboundLimits;
+      limits.messages.take(this.#selfId, m, now);
+      if (p) pointLimiter(limits, next.msg.t).take(this.#selfId, p, now);
+      if (i) limits.items.take(this.#selfId, i, now);
+      this.#outbound.shift();
+      this.#emit(next.msg, next.size);
+      next.onSent?.();
+    }
+  }
+
+  #emit(msg: Message, size: number): void {
     stats.socketOut++;
     stats.socketOutBytes += size;
-    this.#socket.emit(SOCKET_NAME, full);
+    this.#socket.emit(SOCKET_NAME, msg);
   }
 
   #receive(payload: unknown, senderId: unknown): void {
@@ -97,10 +159,10 @@ export class Net {
     // permanent items for scenes it is not viewing.
     const [m, p, i] = messageCost(msg);
     const now = performance.now();
-    const preview = msg.t === "s" || msg.t === "p" || msg.t === "b" || msg.t === "ms" || msg.t === "mp";
-    const limits = preview ? this.#previewLimits : this.#limits;
+    const limits = isPreview(msg.t) ? this.#previewLimits : this.#limits;
     if (!limits.messages.take(senderId, m, now)) return this.#drop(senderId, "rate: messages");
-    const points = msg.t === "e" || msg.t === "me" ? this.#finalPoints : limits.points;
+    // Final geometry (pen-up items, transformed selections) may arrive in one burst.
+    const points = pointLimiter(limits, msg.t);
     if (p && !points.take(senderId, p, now)) return this.#drop(senderId, "rate: points");
     if (i && !limits.items.take(senderId, i, now)) return this.#drop(senderId, "rate: items");
     try {
@@ -125,6 +187,9 @@ export class Net {
   }
 
   destroy(): void {
+    if (this.#outboundTimer !== null) clearTimeout(this.#outboundTimer);
+    this.#outboundTimer = null;
+    this.#outbound.length = 0;
     this.#socket.off?.(SOCKET_NAME, this.#listener);
     this.#handler = null;
   }
@@ -203,9 +268,9 @@ export class LiveSender {
     return { t: "p", id: item.id, from: i / 3, pts, ...(ang ? { ang } : {}) };
   }
 
-  end(item: ScribbleItem, persist: boolean): void {
+  end(item: ScribbleItem, persist: boolean, onSent?: () => void): boolean {
     this.#stop(item.id);
-    this.#net.send({ t: "e", item: toWire(item), persist });
+    return this.#net.send({ t: "e", item: toWire(item), persist }, undefined, onSent);
   }
 
   cancel(id: string): void {

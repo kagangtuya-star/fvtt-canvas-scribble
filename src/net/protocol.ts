@@ -17,6 +17,7 @@ import type { WireStroke } from "../media/ops.ts";
  *   x  cancel     live item abandoned
  *   d  delete     items removed (temporary: applied by everyone; stored: by the GM)
  *   u  update     item replaced (partial eraser, undo/redo of erasing)
+ *   U  updates    several items replaced at once (multi-item transform, recolour)
  *   c  clear      tiered clear (see ClearScope)
  *   q  query      late joiner asks peers for their temporary items
  *   r  reply      a peer's own temporary items, addressed to `to`
@@ -70,6 +71,7 @@ export type Message =
   | { v: number; t: "x"; scene: string; id: string }
   | { v: number; t: "d"; scene: string; ids: string[] }
   | { v: number; t: "u"; scene: string; item: WireItem }
+  | { v: number; t: "U"; scene: string; items: WireItem[] }
   | { v: number; t: "c"; scene: string; scope: ClearScope }
   | { v: number; t: "q"; scene: string }
   | { v: number; t: "r"; scene: string; to: string; items: WireItem[] }
@@ -91,6 +93,8 @@ const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 
 export const MAX_MESSAGE_CHARS = 256 * 1024;
 /** Items in one `r` reply / ids in one `d` delete. */
 export const MAX_BATCH = 200;
+/** Items in one `U` batch update. */
+export const MAX_UPDATE_BATCH = 50;
 /** The largest symmetry preset produces twelve live items per gesture. */
 export const MAX_LIVE_BATCH = 12;
 /** Strokes in one `mr` reply. */
@@ -129,6 +133,13 @@ export function parseMessage(raw: unknown): Message | null {
         : null;
     case "u":
       return isObj(raw.item) ? (raw as unknown as Message) : null;
+    case "U":
+      return Array.isArray(raw.items) &&
+        raw.items.length > 0 &&
+        raw.items.length <= MAX_UPDATE_BATCH &&
+        raw.items.every(isObj)
+        ? { v: PROTOCOL_VERSION, t: "U", scene, items: raw.items as unknown as WireItem[] }
+        : null;
     case "e":
       if (!isObj(raw.item)) return null;
       return {
@@ -202,6 +213,8 @@ export function messageCost(msg: Message): [number, number, number] {
       return [1, points(msg.item), 1];
     case "r":
       return [1, msg.items.reduce((n, i) => n + points(i), 0), msg.items.length];
+    case "U":
+      return [1, msg.items.reduce((n, i) => n + points(i), 0), Math.ceil(msg.items.length / 10)];
     case "d":
       return [1, 0, Math.ceil(msg.ids.length / 10)];
     case "ms":

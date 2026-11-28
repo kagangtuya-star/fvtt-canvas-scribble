@@ -44,6 +44,14 @@ export class RateLimiter {
     this.#burst = burst;
   }
 
+  /** Time in ms before a request can be taken, without consuming tokens. */
+  wait(key: string, cost: number, now: number): number {
+    if (cost > this.#burst) return Infinity;
+    const b = this.#buckets.get(key);
+    if (!b) return 0;
+    return Math.max(0, ((cost - b.tokens) * 1000) / this.#rate - (now - b.at));
+  }
+
   /** Try to take `cost` tokens; returns false when the key is over its budget. */
   take(key: string, cost = 1, now = performance.now()): boolean {
     let b = this.#buckets.get(key);
