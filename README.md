@@ -1,6 +1,9 @@
 # CanvasScribble
 
 English · [简体中文](README_ZH.md)
+<img width="1407" height="748" alt="1142e931c5e72b533d8d6aa846f8f90b" src="https://github.com/user-attachments/assets/016abad4-6c51-4ad6-bfaf-00526893aa41" />
+<img width="1712" height="787" alt="d5413d5275e857e3efc6d0d52092bed2" src="https://github.com/user-attachments/assets/fbb8c97f-669e-4033-8b04-95b4566dea57" />
+<img width="442" height="440" alt="752b2b4984d1118b7ccb54ced9d44135" src="https://github.com/user-attachments/assets/c2db9ff7-5fba-4e66-a14c-9d91361a612d" />
 
 Freehand drawing, annotations, and a laser pointer for Foundry VTT (v13–v14). Draw on the **map** (moves with pan and zoom, optionally saved to the scene) or on the **screen** (pinned to the viewport, fades out automatically).
 
