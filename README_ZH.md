@@ -1,7 +1,9 @@
 # CanvasScribble · 随绘幕布
 
 [English](README.md) · 简体中文
-
+<img width="1407" height="748" alt="1142e931c5e72b533d8d6aa846f8f90b" src="https://github.com/user-attachments/assets/016abad4-6c51-4ad6-bfaf-00526893aa41" />
+<img width="1712" height="787" alt="d5413d5275e857e3efc6d0d52092bed2" src="https://github.com/user-attachments/assets/fbb8c97f-669e-4033-8b04-95b4566dea57" />
+<img width="442" height="440" alt="752b2b4984d1118b7ccb54ced9d44135" src="https://github.com/user-attachments/assets/c2db9ff7-5fba-4e66-a14c-9d91361a612d" />
 Foundry VTT（v13–v14）的即时绘制、标注与激光笔模块。支持两种绘制空间：画在**地图**上（随画布平移缩放，可永久保存进场景），或画在**屏幕**上（固定在视口内，到时间自动淡出）。
 
 ## 地图与屏幕
